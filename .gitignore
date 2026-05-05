@@ -1,0 +1,6 @@
+.DS_Store
+*.log
+audit-report.txt
+cleanup-report.txt
+hardening-report.txt
+/root/security-audit-*/
