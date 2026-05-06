@@ -53,6 +53,32 @@ sudo bash /root/server-security/02-git-cleanup.sh 2>&1 | tee /tmp/cleanup.txt
 - `curl`, `git`, `inotify-tools`, `fail2ban`
 - Resend.com account (бесплатно до 3000 писем/месяц)
 
+## Firewall (iptables)
+
+После первого запуска `03-hardening.sh` рекомендуется ограничить SSH только вашим IP:
+
+```bash
+# Разрешить SSH только с вашего IP
+sudo iptables -R INPUT 10 -p tcp -s ВАШ_IP --dport 22 -j ACCEPT
+
+# Сохранить правила (переживут перезагрузку)
+sudo netfilter-persistent save
+```
+
+Чтобы добавить ваш IP в whitelist fail2ban (не будет заблокирован):
+
+```bash
+# В /etc/fail2ban/jail.local в секции [DEFAULT]:
+ignoreip = 127.0.0.1/8 ВАШ_IP
+sudo systemctl restart fail2ban
+```
+
+Скрипт `01-security-audit.sh` автоматически проверяет iptables и предупреждает если:
+- SSH открыт для `0.0.0.0/0` (весь интернет)
+- Политика `INPUT` не `DROP`
+- MySQL доступен извне
+- fail2ban не активен
+
 ## Cron (настраивается через `install.sh`)
 
 ```

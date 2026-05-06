@@ -17,6 +17,12 @@ fi
 REPORT_DIR="/root/security-audit-$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$REPORT_DIR"
 
+# IP с которого разрешён SSH (определяем из iptables, или задайте вручную)
+TRUSTED_SSH_IP=$(iptables -L INPUT -n --line-numbers 2>/dev/null \
+  | awk '$3=="ACCEPT" && $5=="tcp" && /dpt:22/' \
+  | awk '{print $8}' | grep -v '0.0.0.0' | head -1)
+[ -z "$TRUSTED_SSH_IP" ] && TRUSTED_SSH_IP="67.185.203.213"
+
 # --- RESEND НАСТРОЙКИ ---
 # Замените на ваши значения или вынесите в /etc/security-audit.env
 RESEND_API_KEY="re_ВАШ_API_КЛЮЧ"
@@ -99,15 +105,28 @@ echo "HestiaCP version: $(cat /usr/local/hestia/conf/hestia.conf 2>/dev/null | g
 log "=== 2. ПОСЛЕДНИЕ ВХОДЫ SSH (last 50) ==="
 last -n 50 | tee "$REPORT_DIR/last-logins.txt"
 
-echo ""
-warn "Неудачные попытки входа SSH:"
-grep "Failed password" /var/log/auth.log 2>/dev/null | tail -30 \
-  | tee "$REPORT_DIR/failed-ssh-logins.txt"
+# Неудачные SSH входы — показываем только счётчик (fail2ban защищает)
+grep "Failed password" /var/log/auth.log 2>/dev/null \
+  | tee "$REPORT_DIR/failed-ssh-logins.txt" > /dev/null
+FAILED_COUNT=$(wc -l < "$REPORT_DIR/failed-ssh-logins.txt")
+if [ "$FAILED_COUNT" -gt 10 ]; then
+  warn "Неудачных попыток входа SSH в auth.log: $FAILED_COUNT (fail2ban активен)"
+else
+  log "✓ Неудачных SSH попыток: $FAILED_COUNT"
+fi
 
-echo ""
-warn "Успешные входы по паролю (подозрительно — должны быть только по ключу):"
-grep "Accepted password" /var/log/auth.log 2>/dev/null | tail -20 \
-  | tee "$REPORT_DIR/accepted-password-logins.txt"
+# Принятые пароли — алерт только для IP не из вайтлиста
+grep "Accepted password" /var/log/auth.log 2>/dev/null \
+  | tee "$REPORT_DIR/accepted-password-logins.txt" > /dev/null
+PASSWD_FROM_UNKNOWN=$(grep "Accepted password" /var/log/auth.log 2>/dev/null \
+  | grep -v "$TRUSTED_SSH_IP")
+if [ -n "$PASSWD_FROM_UNKNOWN" ]; then
+  warn "Принятые пароли с незнакомых IP (ПОДОЗРИТЕЛЬНО):"
+  echo "$PASSWD_FROM_UNKNOWN" | tee -a "$REPORT_DIR/accepted-password-logins.txt"
+  queue_alert "SSH: принятые пароли с неизвестных IP" "$PASSWD_FROM_UNKNOWN"
+else
+  log "✓ Принятых паролей с незнакомых IP нет (только $TRUSTED_SSH_IP или ключи)"
+fi
 
 # --- 3. АКТИВНЫЕ СЕССИИ И ПРОЦЕССЫ ---
 log "=== 3. АКТИВНЫЕ СЕССИИ ==="
@@ -122,10 +141,52 @@ log "=== 4. НЕСТАНДАРТНЫЕ СЕТЕВЫЕ СОЕДИНЕНИЯ ==="
 echo "Слушающие порты:"
 ss -tlnp | tee "$REPORT_DIR/listening-ports.txt"
 
-echo ""
-warn "Активные внешние соединения (не 80/443/22/3306):"
-ss -tnp | grep ESTAB | grep -vE ':80 |:443 |:22 |:3306 |:8083 ' \
-  | tee "$REPORT_DIR/external-connections.txt"
+EXT_CONNS=$(ss -tnp | grep ESTAB | grep -vE ':80 |:443 |:22 |:3306 |:8083 ')
+if [ -n "$EXT_CONNS" ]; then
+  warn "Активные внешние соединения (не 80/443/22/3306):"
+  echo "$EXT_CONNS" | tee "$REPORT_DIR/external-connections.txt"
+else
+  log "✓ Нестандартных внешних соединений нет"
+fi
+
+# --- 4b. ПРОВЕРКА IPTABLES ---
+log "=== 4b. ПРОВЕРКА IPTABLES ==="
+IPTABLES_RULES=$(iptables -L INPUT -n --line-numbers 2>/dev/null)
+echo "$IPTABLES_RULES" | tee "$REPORT_DIR/iptables-input.txt"
+
+# Проверяем: SSH (порт 22) не должен быть открыт для 0.0.0.0/0 как SOURCE
+# Используем awk чтобы проверить именно колонку source (5), а не destination
+SSH_OPEN=$(iptables -L INPUT -n --line-numbers 2>/dev/null \
+  | awk '$2=="ACCEPT" && $5=="0.0.0.0/0"' | grep 'dpt:22')
+if [ -n "$SSH_OPEN" ]; then
+  queue_alert "IPTABLES: SSH открыт для всего мира!" "Правило разрешает SSH с 0.0.0.0/0 — следует ограничить по IP:\n$SSH_OPEN"
+else
+  log "✓ SSH ограничен по IP (0.0.0.0/0 не разрешён как source)"
+fi
+
+# Проверяем: политика INPUT
+INPUT_POLICY=$(echo "$IPTABLES_RULES" | grep 'Chain INPUT' | grep -o 'policy [A-Z]*')
+if echo "$INPUT_POLICY" | grep -q 'DROP\|REJECT'; then
+  log "✓ Политика INPUT: $INPUT_POLICY (безопасно)"
+else
+  queue_alert "IPTABLES: политика INPUT=$INPUT_POLICY" "Рекомендуется policy DROP. Текущая политика: $INPUT_POLICY"
+fi
+
+# Проверяем: MySQL/MariaDB не открыт наружу (source 0.0.0.0/0)
+MYSQL_OPEN=$(iptables -L INPUT -n --line-numbers 2>/dev/null \
+  | awk '$2=="ACCEPT" && $5=="0.0.0.0/0"' | grep 'dpt:3306')
+if [ -n "$MYSQL_OPEN" ]; then
+  queue_alert "IPTABLES: MySQL открыт для всего мира!" "Правило разрешает подключение к MySQL с 0.0.0.0/0:\n$MYSQL_OPEN"
+else
+  log "✓ MySQL не доступен извне"
+fi
+
+# Проверяем: есть ли fail2ban цепочки
+if iptables -L f2b-sshd -n &>/dev/null; then
+  log "✓ fail2ban активен (цепочка f2b-sshd найдена)"
+else
+  queue_alert "fail2ban не активен" "Цепочка f2b-sshd не найдена в iptables — возможно fail2ban не запущен"
+fi
 
 # --- 5. CRON-ЗАДАЧИ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ ---
 log "=== 5. CRON-ЗАДАЧИ ==="
@@ -136,8 +197,19 @@ cat /etc/crontab 2>/dev/null
 for user in "${USERS[@]}" root www-data; do
   CRON=$(crontab -u "$user" -l 2>/dev/null)
   if [ -n "$CRON" ]; then
-    queue_alert "Cron пользователя $user" "$CRON"
     echo "$CRON" | tee -a "$REPORT_DIR/crontabs.txt"
+    # Strip comment lines and blank lines, then check what's left
+    CRON_REAL=$(echo "$CRON" | grep -v '^\s*#' | grep -v '^\s*$' | \
+      grep -v 'MAILTO=' | grep -v 'CONTENT_TYPE=')
+    # Skip alert if all real cron entries are safe known-patterns:
+    #   artisan schedule:run  — standard Laravel scheduler
+    #   security-audit        — our own audit script
+    #   hestiaweb/hestia      — HestiaCP system tasks
+    CRON_SUSPICIOUS=$(echo "$CRON_REAL" | grep -v 'artisan schedule:run' | \
+      grep -v 'server-security\|security-audit' | grep -v 'hestia')
+    if [ -n "$CRON_SUSPICIOUS" ]; then
+      queue_alert "Cron пользователя $user" "$CRON"
+    fi
   fi
 done
 
@@ -146,15 +218,35 @@ ls -la /var/spool/cron/crontabs/ 2>/dev/null
 
 # --- 6. ПОИСК МОДИФИЦИРОВАННЫХ ФАЙЛОВ (последние 14 дней) ---
 log "=== 6. ФАЙЛЫ ИЗМЕНЁННЫЕ ЗА 14 ДНЕЙ ==="
+# Исключаем безопасные шумные пути:
+#   storage/framework/views/  — скомпилированные Blade-шаблоны
+#   storage/framework/cache/  — Laravel bootstrap кэш
+#   document_errors/          — страницы ошибок HestiaCP (меняются при hardening)
+#   public/js/filament/       — Filament JS ассеты (npm build output)
+#   public/css/filament/      — Filament CSS ассеты
+#   public/build/             — Vite build output
+#   node_modules/vendor/      — зависимости
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
-    warn "Изменённые PHP/JS файлы у пользователя $user:"
-    find "$WEB_DIR" -type f \( -name "*.php" -o -name "*.js" -o -name "*.html" -o -name "*.htaccess" \) \
+    MODIFIED=$(find "$WEB_DIR" -type f \( -name "*.php" -o -name "*.js" -o -name "*.html" -o -name "*.htaccess" \) \
       -newer /etc/passwd -mtime -14 \
-      ! -path "*/vendor/*" ! -path "*/.git/*" \
+      ! -path "*/vendor/*" \
+      ! -path "*/.git/*" \
+      ! -path "*/node_modules/*" \
+      ! -path "*/storage/framework/views/*" \
+      ! -path "*/storage/framework/cache/*" \
+      ! -path "*/document_errors/*" \
+      ! -path "*/public/js/filament/*" \
+      ! -path "*/public/css/filament/*" \
+      ! -path "*/public/build/*" \
+      ! -path "*/bootstrap/cache/*" \
       -printf "%TY-%Tm-%Td %TH:%TM  %p\n" 2>/dev/null \
-      | sort -r | head -50 | tee -a "$REPORT_DIR/modified-files-$user.txt"
+      | sort -r | head -50)
+    if [ -n "$MODIFIED" ]; then
+      warn "Изменённые PHP/JS файлы у пользователя $user:"
+      echo "$MODIFIED" | tee -a "$REPORT_DIR/modified-files-$user.txt"
+    fi
   fi
 done
 
@@ -185,16 +277,12 @@ PHP_WEBSHELL_PATTERNS=(
 )
 
 # Подозрительные имена файлов-шеллов (ищем везде включая vendor/)
+# Только уникальные имена, явно не встречающиеся в легитимном коде
 SHELL_FILENAMES=(
   'shc.php'
-  '.cache.php'
-  'bootstrap.cache.php'
   'adminfuns.php'
   'wp-conffq.php'
   'wp-headre.php'
-  'press.php'
-  'radio.php'
-  'content.php'
 )
 
 for user in "${USERS[@]}"; do
@@ -226,19 +314,29 @@ for user in "${USERS[@]}"; do
     done
 
     # 3. PHP-файлы с hex-именами (8+ hex символов) — характерно для дропперов
+    # Исключаем storage/framework/views/ — там легитимные скомпилированные Blade-шаблоны Laravel
     RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
       | grep -E '/[0-9a-f]{8,}\.php$' \
-      | grep -v '/.git/')
+      | grep -v '/.git/' \
+      | grep -v '/storage/framework/views/' \
+      | grep -v '/vendor/')
     if [ -n "$RESULTS" ]; then
       queue_alert "PHP ДРОППЕР (hex-имя) у $user" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
     fi
 
-    # 4. cache.php в build/assets или storage (вне vendor/)
+    # 4. cache.php ТОЛЬКО в подозрительных местах (не в /config/, /wp-includes/, /themes/)
+    # Легитимные места: /config/cache.php (Laravel), /wp-includes/cache.php (WP core),
+    #   /wp-content/themes/*/cache.php (темы)
+    # Подозрительные: /public/, /storage/, /upload/, /assets/, /build/, /tmp/
     RESULTS=$(find "$WEB_DIR" -name "cache.php" 2>/dev/null \
       | grep -v '/vendor/' \
       | grep -v '/node_modules/' \
-      | grep -v '/.git/')
+      | grep -v '/.git/' \
+      | grep -v '/config/cache\.php' \
+      | grep -v '/wp-includes/' \
+      | grep -v '/wp-content/themes/' \
+      | grep -E '/(public|storage|upload|assets|build|tmp|cache|files)/')
     if [ -n "$RESULTS" ]; then
       queue_alert "WEBSHELL cache.php у $user" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
@@ -259,19 +357,34 @@ log "=== 8. ФАЙЛЫ С 777/SUID ПРАВАМИ ==="
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
-    warn "777 файлы у $user:"
-    find "$WEB_DIR" -perm -0777 -type f 2>/dev/null | head -20 \
-      | tee -a "$REPORT_DIR/perms-$user.txt"
-    warn "777 директории у $user:"
-    find "$WEB_DIR" -perm -0777 -type d 2>/dev/null | head -20 \
-      | tee -a "$REPORT_DIR/perms-$user.txt"
+    FILES_777=$(find "$WEB_DIR" -perm -0777 -type f 2>/dev/null | head -20)
+    DIRS_777=$(find "$WEB_DIR" -perm -0777 -type d 2>/dev/null | head -20)
+    if [ -n "$FILES_777" ]; then
+      warn "777 файлы у $user:"
+      echo "$FILES_777" | tee -a "$REPORT_DIR/perms-$user.txt"
+      queue_alert "777 файлы у $user" "$FILES_777"
+    fi
+    if [ -n "$DIRS_777" ]; then
+      warn "777 директории у $user:"
+      echo "$DIRS_777" | tee -a "$REPORT_DIR/perms-$user.txt"
+      queue_alert "777 директории у $user" "$DIRS_777"
+    fi
   fi
 done
 
-# SUID во всей системе
-warn "SUID файлы в системе (проверьте на подозрительные):"
-find / -perm /4000 -type f 2>/dev/null | grep -vE '(/usr/bin|/usr/sbin|/bin|/sbin)' \
-  | tee "$REPORT_DIR/suid-files.txt"
+# SUID во всей системе — алертим только на нестандартные файлы
+# Стандартные системные SUID пути исключаем
+SUID_STANDARD='/usr/bin|/usr/sbin|/bin|/sbin|/usr/lib/openssh|/usr/lib/dbus|/usr/libexec/polkit|/usr/lib/mysql/plugin/auth_pam'
+SUID_SUSPICIOUS=$(find / -perm /4000 -type f 2>/dev/null \
+  | grep -vE "$SUID_STANDARD")
+find / -perm /4000 -type f 2>/dev/null > "$REPORT_DIR/suid-files.txt"
+if [ -n "$SUID_SUSPICIOUS" ]; then
+  warn "НЕСТАНДАРТНЫЕ SUID файлы (требуют проверки):"
+  echo "$SUID_SUSPICIOUS" | tee -a "$REPORT_DIR/suid-files.txt"
+  queue_alert "Нестандартные SUID файлы" "$SUID_SUSPICIOUS"
+else
+  log "✓ SUID файлы — только стандартные системные"
+fi
 
 # --- 9. ЛОГИ WEB-СЕРВЕРА — ищем подозрительные запросы ---
 log "=== 9. ПОДОЗРИТЕЛЬНЫЕ ЗАПРОСЫ В NGINX/APACHE ЛОГАХ ==="
@@ -295,33 +408,62 @@ log "=== 10. PHP КОНФИГУРАЦИЯ ==="
 php -i 2>/dev/null | grep -E "(disable_functions|open_basedir|allow_url_fopen|allow_url_include|expose_php|upload_tmp_dir)" \
   | tee "$REPORT_DIR/php-config.txt"
 
-# Проверка PHP-FPM пулов
-warn "PHP-FPM пулы (проверьте open_basedir в каждом):"
-grep -r "open_basedir\|user\|group" /etc/php/*/fpm/pool.d/ 2>/dev/null \
-  | tee -a "$REPORT_DIR/php-fpm-pools.txt"
+# Проверка PHP-FPM пулов — алертим только на пулы БЕЗ open_basedir
+POOLS_NO_BASEDIR=$(grep -rL "open_basedir" /etc/php/*/fpm/pool.d/*.conf 2>/dev/null \
+  | grep -v dummy.conf | grep -v '/www.conf')  # www.conf — HestiaCP internal (hestiamail)
+if [ -n "$POOLS_NO_BASEDIR" ]; then
+  warn "PHP-FPM пулы БЕЗ open_basedir (риск выхода за пределы домашней директории):"
+  echo "$POOLS_NO_BASEDIR" | tee -a "$REPORT_DIR/php-fpm-pools.txt"
+  queue_alert "PHP-FPM пулы без open_basedir" "$POOLS_NO_BASEDIR"
+else
+  log "✓ Все PHP-FPM пулы имеют open_basedir"
+fi
 
 # --- 11. ПРОВЕРКА .htaccess И .user.ini НА ИНЪЕКЦИИ ---
 log "=== 11. ПРОВЕРКА .htaccess И .user.ini ==="
+# Ищем только подозрительные паттерны, а не дампим весь контент
+HTACCESS_BAD_PATTERNS='php_value auto_prepend|SetHandler.*cgi|AddHandler.*php|RewriteRule.*eval|base64_decode|system\(|shell_exec'
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
-    warn ".htaccess файлы у $user:"
+    # Сохраняем все htaccess в отчёт тихо
     find "$WEB_DIR" -name ".htaccess" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null \
-      | tee -a "$REPORT_DIR/htaccess-$user.txt"
-    warn ".user.ini файлы у $user:"
+      >> "$REPORT_DIR/htaccess-$user.txt"
+    # Алертим только на подозрительные паттерны
+    HTACCESS_SUSPICIOUS=$(grep -rniE "$HTACCESS_BAD_PATTERNS" \
+      $(find "$WEB_DIR" -name ".htaccess" 2>/dev/null) 2>/dev/null)
+    if [ -n "$HTACCESS_SUSPICIOUS" ]; then
+      warn "Подозрительные .htaccess у $user:"
+      echo "$HTACCESS_SUSPICIOUS" | tee -a "$REPORT_DIR/htaccess-$user.txt"
+      queue_alert ".htaccess инъекция у $user" "$HTACCESS_SUSPICIOUS"
+    fi
+    # .user.ini — сохраняем тихо, алертим только на подозрительные записи
     find "$WEB_DIR" -name ".user.ini" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null \
-      | tee -a "$REPORT_DIR/user-ini-$user.txt"
+      >> "$REPORT_DIR/user-ini-$user.txt"
+    USERINI_SUSPICIOUS=$(grep -rniE "auto_prepend_file|auto_append_file|open_basedir\s*=\s*none" \
+      $(find "$WEB_DIR" -name ".user.ini" 2>/dev/null) 2>/dev/null)
+    if [ -n "$USERINI_SUSPICIOUS" ]; then
+      warn "Подозрительные .user.ini у $user:"
+      echo "$USERINI_SUSPICIOUS" | tee -a "$REPORT_DIR/user-ini-$user.txt"
+      queue_alert ".user.ini инъекция у $user" "$USERINI_SUSPICIOUS"
+    fi
   fi
 done
 
 # --- 12. ПРОВЕРКА /tmp И /dev/shm НА ПОДОЗРИТЕЛЬНЫЕ ФАЙЛЫ ---
 log "=== 12. /tmp И /dev/shm ==="
-warn "Файлы в /tmp:"
-ls -la /tmp/ | tee "$REPORT_DIR/tmp-files.txt"
-warn "Файлы в /dev/shm:"
-ls -la /dev/shm/ 2>/dev/null | tee "$REPORT_DIR/shm-files.txt"
-warn "Исполняемые файлы в /tmp:"
-find /tmp /dev/shm -type f -executable 2>/dev/null | tee -a "$REPORT_DIR/tmp-executables.txt"
+# Сохраняем листинг в отчёт тихо
+ls -la /tmp/ > "$REPORT_DIR/tmp-files.txt" 2>/dev/null
+ls -la /dev/shm/ >> "$REPORT_DIR/tmp-files.txt" 2>/dev/null
+# Алертим только на исполняемые файлы — реальная угроза
+TMP_EXEC=$(find /tmp /dev/shm -type f -executable 2>/dev/null)
+if [ -n "$TMP_EXEC" ]; then
+  warn "Исполняемые файлы в /tmp или /dev/shm:"
+  echo "$TMP_EXEC" | tee "$REPORT_DIR/tmp-executables.txt"
+  queue_alert "Исполняемые файлы в /tmp" "$TMP_EXEC"
+else
+  log "✓ Нет исполняемых файлов в /tmp и /dev/shm"
+fi
 
 # --- 13. SSH КЛЮЧИ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ ---
 log "=== 13. SSH КЛЮЧИ ==="
@@ -329,10 +471,20 @@ for user in "${USERS[@]}" root; do
   HOME_DIR=$(eval echo "~$user")
   AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
   if [ -f "$AUTH_KEYS" ]; then
-    warn "SSH ключи пользователя $user:"
-    cat "$AUTH_KEYS" | tee -a "$REPORT_DIR/ssh-keys.txt"
+    # Сохраняем все ключи в отчёт тихо
+    echo "=== $user ==" >> "$REPORT_DIR/ssh-keys.txt"
+    cat "$AUTH_KEYS" >> "$REPORT_DIR/ssh-keys.txt"
+    # Алертим только если файл ключей изменился недавно (за 7 дней)
+    if find "$AUTH_KEYS" -mtime -7 2>/dev/null | grep -q .; then
+      KEYS_CONTENT=$(cat "$AUTH_KEYS")
+      warn "Недавно изменённые SSH ключи пользователя $user:"
+      echo "$KEYS_CONTENT"
+      queue_alert "Изменены SSH ключи у $user" "$KEYS_CONTENT"
+    fi
   fi
 done
+KEY_COUNT=$(grep -c 'ssh-' "$REPORT_DIR/ssh-keys.txt" 2>/dev/null || echo 0)
+log "SSH ключи сохранены в отчёт ($KEY_COUNT ключей всего)"
 
 # --- 14. ИЗМЕНЕНИЯ В /etc ---
 log "=== 14. НЕДАВНО ИЗМЕНЁННЫЕ СИСТЕМНЫЕ ФАЙЛЫ ==="
@@ -378,8 +530,8 @@ SUMMARY_FILE="$REPORT_DIR/summary.txt"
   echo "СТАТИСТИКА:"
   echo "=============================="
   for user in "${USERS[@]}"; do
-    WEBSHELL_COUNT=$(wc -l < "$REPORT_DIR/webshells-$user.txt" 2>/dev/null || echo 0)
-    MOD_COUNT=$(wc -l < "$REPORT_DIR/modified-files-$user.txt" 2>/dev/null || echo 0)
+    WEBSHELL_COUNT=$(cat "$REPORT_DIR/webshells-$user.txt" 2>/dev/null | wc -l)
+    MOD_COUNT=$(cat "$REPORT_DIR/modified-files-$user.txt" 2>/dev/null | wc -l)
     echo "$user: изменённых файлов=$MOD_COUNT, подозрительных=$WEBSHELL_COUNT"
   done
 
