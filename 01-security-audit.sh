@@ -274,15 +274,32 @@ PHP_WEBSHELL_PATTERNS=(
   'c99shell'
   'r57shell'
   'phpspy'
+  'preg_replace.*\/e'
+  'create_function.*eval'
+  '@eval('
+  'assert(base64_decode'
+  'gzinflate(base64_decode'
+  'str_rot13(base64_decode'
+  'move_uploaded_file.*\.php'
+  '\$_FILES.*eval'
+  'ReflectionFunction'
+  'pcntl_exec'
 )
 
 # Подозрительные имена файлов-шеллов (ищем везде включая vendor/)
 # Только уникальные имена, явно не встречающиеся в легитимном коде
 SHELL_FILENAMES=(
-  'shc.php'
-  'adminfuns.php'
-  'wp-conffq.php'
-  'wp-headre.php'
+  # Known webshell names
+  'c99.php' 'r57.php' 'b374k.php' 'wso.php' 'alfa.php' 'alfacgiapi.php'
+  'FilesMan.php' 'indoxploit.php' 'symlink.php' 'cpanel.php'
+  'adminfuns.php' 'wp-conffq.php' 'wp-headre.php' 'shc.php'
+  # Specific shells found in this incident
+  'kozlakola.php' 'b-1.php'
+)
+
+# Короткие имена — подозрительны вне vendor/node_modules/storage/framework
+SHELL_FILENAMES_SHORT=(
+  'b.php' 'c.php' 'x.php' 'z.php' 'a.php' 'k.php'
 )
 
 for user in "${USERS[@]}"; do
@@ -299,7 +316,13 @@ for user in "${USERS[@]}"; do
         | grep -v '/vendor/' \
         | grep -v '/node_modules/')
       if [ -n "$RESULTS" ]; then
-        queue_alert "БЭКДОР у $user (паттерн: $pattern)" "$RESULTS"
+        DETAILS=""
+        while IFS= read -r fpath; do
+          FMETA=$(stat -c "  mtime=%y owner=%U size=%s" "$fpath" 2>/dev/null)
+          FPREVIEW=$(grep -m1 "$pattern" "$fpath" 2>/dev/null | head -c 200)
+          DETAILS+="FILE: $fpath\n$FMETA\n  Match: $FPREVIEW\n\n"
+        done <<< "$RESULTS"
+        queue_alert "БЭКДОР у $user (паттерн: $pattern)" "$DETAILS"
         echo "$RESULTS" | tee -a "$FOUND_FILE"
       fi
     done
@@ -309,6 +332,19 @@ for user in "${USERS[@]}"; do
       RESULTS=$(find "$WEB_DIR" -name "$fname" 2>/dev/null | grep -v '/.git/')
       if [ -n "$RESULTS" ]; then
         queue_alert "ПОДОЗРИТЕЛЬНЫЙ ФАЙЛ у $user ($fname)" "$RESULTS"
+        echo "$RESULTS" | tee -a "$FOUND_FILE"
+      fi
+    done
+
+    # 2b. Короткие имена файлов — подозрительны вне vendor/node_modules/storage/framework
+    for fname in "${SHELL_FILENAMES_SHORT[@]}"; do
+      RESULTS=$(find "$WEB_DIR" -name "$fname" 2>/dev/null \
+        | grep -v '/.git/' \
+        | grep -v '/vendor/' \
+        | grep -v '/node_modules/' \
+        | grep -v '/storage/framework/')
+      if [ -n "$RESULTS" ]; then
+        queue_alert "ПОДОЗРИТЕЛЬНЫЙ ФАЙЛ (короткое имя) у $user ($fname)" "$RESULTS"
         echo "$RESULTS" | tee -a "$FOUND_FILE"
       fi
     done
@@ -351,6 +387,46 @@ for user in "${USERS[@]}"; do
     queue_alert "МАЙНЕР В CRON у $user (.X11-linux)" "$CRON_XLINUX"
   fi
 done
+
+# --- 7b. НУЛЕВАЯ ТЕРПИМОСТЬ: PHP В ДИРЕКТОРИЯХ ЗАГРУЗКИ ---
+log "=== 7b. PHP-ФАЙЛЫ В ДИРЕКТОРИЯХ ЗАГРУЗКИ (нулевая терпимость) ==="
+# ПРАВИЛО: PHP-файлы в этих директориях ВСЕГДА являются вредоносными.
+# Легитимный код никогда не размещает .php файлы в upload-директориях.
+# Проверяем ВСЕ файлы независимо от даты изменения.
+
+UPLOAD_PATH_PATTERNS=(
+  '*/storage/app/public/*'
+  '*/storage/app/livewire-tmp/*'
+  '*/wp-content/uploads/*'
+  '*/wp-content/cache/*'
+  '*/public/storage/*'
+)
+
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ ! -d "$WEB_DIR" ]; then continue; fi
+
+  UPLOAD_FOUND_FILE="$REPORT_DIR/upload-php-$user.txt"
+  echo "" > "$UPLOAD_FOUND_FILE"
+
+  for path_pattern in "${UPLOAD_PATH_PATTERNS[@]}"; do
+    FOUND=$(find "$WEB_DIR" -type f \
+      \( -name "*.php" -o -name "*.php5" -o -name "*.phtml" -o -name "*.phar" \) \
+      -path "$path_pattern" 2>/dev/null)
+
+    if [ -n "$FOUND" ]; then
+      DETAILS="Pattern: $path_pattern\n"
+      while IFS= read -r fpath; do
+        FMETA=$(stat -c "  mtime=%y owner=%U size=%s" "$fpath" 2>/dev/null)
+        FPREVIEW=$(head -c 300 "$fpath" 2>/dev/null | strings | head -5 | tr '\n' ' ')
+        DETAILS+="FILE: $fpath\n$FMETA\n  Preview: $FPREVIEW\n\n"
+        echo "$fpath" >> "$UPLOAD_FOUND_FILE"
+      done <<< "$FOUND"
+      queue_alert "⚠ PHP В UPLOAD-ДИРЕКТОРИИ у $user" "$DETAILS"
+    fi
+  done
+done
+log "✓ Сканирование upload-директорий завершено"
 
 # --- 8. ФАЙЛЫ С ОПАСНЫМИ ПРАВАМИ ---
 log "=== 8. ФАЙЛЫ С 777/SUID ПРАВАМИ ==="
