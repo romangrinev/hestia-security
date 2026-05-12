@@ -2,6 +2,14 @@
 
 Security hardening, monitoring and incident response scripts for **HestiaCP** servers (Ubuntu/Debian, nginx + PHP-FPM).
 
+## Public Release
+
+This repository is intentionally sanitized for public use. It does not contain private domains, personal IP addresses, API keys, or internal incident notes.
+
+The scripts are provided as a best-effort toolkit for HestiaCP administrators. They are not a substitute for a complete security program, and they may need adjustment for your server layout, PHP stack, or nginx template set.
+
+If you use this project in production, review the scripts before running them and test changes on a staging host first.
+
 ## Quick Install
 
 ```bash
@@ -52,6 +60,18 @@ sudo bash /root/server-security/02-git-cleanup.sh 2>&1 | tee /tmp/cleanup.txt
 - HestiaCP
 - `curl`, `git`, `inotify-tools`, `fail2ban`
 - [Resend.com](https://resend.com) account (free up to 3,000 emails/month)
+
+## Compatibility Notes
+
+- Tested against HestiaCP-managed nginx + PHP-FPM setups.
+- The Livewire fix is implemented through per-site `conf_security` files, not by editing HestiaCP templates.
+- If your server uses custom nginx or PHP-FPM paths, check the generated config before enabling it on production traffic.
+
+## Support
+
+Issues and pull requests are welcome.
+
+Please include your HestiaCP version, Ubuntu/Debian version, and the relevant script output when reporting a problem.
 
 ## Firewall (iptables)
 
