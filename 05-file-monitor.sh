@@ -36,7 +36,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting file monitor. Watching:$WATCH_DIRS
   >> /var/log/file-changes.log
 
 exec inotifywait -m -r -e create,modify,moved_to \
-  --include '\.(php|phtml|phar|js|html|sh|py|pl)$' \
+  --include '(artisan|\.(php|phtml|phar|js|html|sh|py|pl))$' \
   $WATCH_DIRS 2>/dev/null \
   | while read dir event file; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $event: ${dir}${file}" \

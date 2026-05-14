@@ -367,8 +367,14 @@ for user in "${USERS[@]}"; do
         return 403;
     }
 
-    # Block sensitive file access
-    location ~* \.(env|log|sql|bak|backup|swp|orig)$ {
+    # Block sensitive file access (credentials, backups, editor swap files)
+    location ~* \.(env|log|sql|bak|old|save|backup|swp|orig|tmp)$ {
+        deny all;
+        return 403;
+    }
+
+    # Block config backup file patterns regardless of extension chain
+    location ~* /(wp-config|config|settings|database|credentials|secrets)\.(php|ini|txt|bak|old|save|backup)$ {
         deny all;
         return 403;
     }'

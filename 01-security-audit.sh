@@ -374,6 +374,22 @@ for user in "${USERS[@]}"; do
       queue_alert "NEWLY CREATED PHP IN PUBLIC/ for $user (last 24h)" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
     fi
+
+    # 7. Backup/config files that should NEVER be publicly accessible
+    # wp-config.php.old, config.php.bak, .env.bak, settings.php.old, etc.
+    # If found in web root, they can leak DB credentials and secret keys
+    BACKUP_FILES=$(find "$WEB_DIR" -maxdepth 4 -type f 2>/dev/null \( \
+      -name "wp-config*.old" -o -name "wp-config*.bak" -o -name "wp-config*.save" \
+      -o -name "config.php.bak" -o -name "config.php.old" \
+      -o -name "settings.php.bak" -o -name "settings.php.old" \
+      -o -name "database.php.bak" -o -name "database.php.old" \
+      -o -name ".env.bak" -o -name ".env.old" -o -name ".env.save" -o -name ".env.backup" \
+      -o -name "*.php.bak" -o -name "*.php.old" -o -name "*.php.save" \
+    \) | grep -v '/.git/' | grep -v '/vendor/')
+    if [ -n "$BACKUP_FILES" ]; then
+      queue_alert "CONFIG BACKUP FILES EXPOSED for $user (may leak credentials!)" "$BACKUP_FILES"
+      echo "$BACKUP_FILES" | tee -a "$FOUND_FILE"
+    fi
   fi
 done
 

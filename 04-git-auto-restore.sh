@@ -60,6 +60,9 @@ for user in "${USERS[@]}"; do
       log "WARNING: Changes detected in $REPO ($CHANGES files)"
       echo "$CHANGED_FILES" | tee -a "$LOG"
 
+      # Save content diff before rollback (so we can review what was changed)
+      DIFF_CONTENT=$(sudo -u "$user" git -C "$REPO" diff 2>/dev/null | head -200)
+
       # Roll back
       sudo -u "$user" git -C "$REPO" checkout -- . 2>/dev/null
       sudo -u "$user" git -C "$REPO" clean -fd 2>/dev/null
@@ -75,6 +78,9 @@ Time: $(date)
 
 Changed files:
 $CHANGED_FILES
+
+Content diff (first 200 lines):
+${DIFF_CONTENT:-'(no tracked content diff — may be untracked files or mode-only change)'}
 
 Rollback performed via git checkout -- . && git clean -fd.
 Immediately check attack vector: sudo bash /root/server-security/01-security-audit.sh"
