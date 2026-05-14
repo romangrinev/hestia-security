@@ -242,15 +242,25 @@ if ! command -v inotifywait &>/dev/null; then
   apt-get install -y inotify-tools
 fi
 
-# Create systemd service for file monitoring
-cat > /etc/systemd/system/file-monitor.service << 'EOF'
+# Detect the package directory (where this script lives)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MONITOR_SCRIPT="$SCRIPT_DIR/05-file-monitor.sh"
+
+if [ ! -f "$MONITOR_SCRIPT" ]; then
+  warn "05-file-monitor.sh not found in $SCRIPT_DIR — skipping file monitor setup"
+else
+  chmod +x "$MONITOR_SCRIPT"
+
+  # Systemd service points directly to the repo script — no copy needed.
+  # Updates via git pull automatically take effect on next service restart.
+  cat > /etc/systemd/system/file-monitor.service << EOF
 [Unit]
-Description=Web Files Monitor
+Description=Web Files Monitor (hestia-security)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/file-monitor.sh
+ExecStart=$MONITOR_SCRIPT
 Restart=always
 RestartSec=5
 
@@ -258,36 +268,12 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-cat > /usr/local/bin/file-monitor.sh << 'SCRIPT'
-#!/bin/bash
-WATCH_DIRS=""
-for user in $(/usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}'); do
-  [ -d "/home/$user/web" ] && WATCH_DIRS="$WATCH_DIRS /home/$user/web"
-done
-
-if [ -z "$WATCH_DIRS" ]; then
-  # fallback: all /home/*/web directories
-  for d in /home/*/web; do
-    [ -d "$d" ] && WATCH_DIRS="$WATCH_DIRS $d"
-  done
+  systemctl daemon-reload
+  systemctl enable file-monitor
+  systemctl restart file-monitor
+  log "✓ File monitoring started — running from $MONITOR_SCRIPT"
+  log "  Log: /var/log/file-changes.log"
 fi
-
-exec inotifywait -m -r -e create,modify,moved_to \
-  --include '\.(php|js|html|sh|py|pl|phtml)$' \
-  $WATCH_DIRS 2>/dev/null \
-  | while read dir event file; do
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $event: ${dir}${file}" \
-      >> /var/log/file-changes.log
-        # Alert if PHP file changed outside git
-    logger -t "file-monitor" "ALERT: File changed: ${dir}${file} ($event)"
-  done
-SCRIPT
-
-chmod +x /usr/local/bin/file-monitor.sh
-systemctl daemon-reload
-systemctl enable file-monitor
-systemctl start file-monitor
-log "✓ File monitoring started (log: /var/log/file-changes.log)"
 
 # ============================================================
 # 7. NGINX — security headers + per-site conf_security blocks
