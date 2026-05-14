@@ -329,24 +329,72 @@ for user in "${USERS[@]}"; do
     [ -f "$domain_dir/artisan" ] && IS_LARAVEL=true
 
     # Base security block (all sites)
-    BASE_BLOCK='    # Block PHP execution in writable directories
+    BASE_BLOCK='    # Block PHP execution in writable/static content directories
     location ^~ /storage/ {
         try_files $uri $uri/ /index.php?$args;
         location ~* \.php$ { deny all; return 403; }
     }
-    location ^~ /build/assets/ {
+    location ^~ /build/ {
         try_files $uri $uri/ =404;
         location ~* \.php$ { deny all; return 403; }
+    }
+    location ^~ /images/ {
+        try_files $uri $uri/ =404;
+        location ~* \.php$ { deny all; return 403; }
+    }
+    location ^~ /img/ {
+        try_files $uri $uri/ =404;
+        location ~* \.php$ { deny all; return 403; }
+    }
+    location ^~ /media/ {
+        try_files $uri $uri/ =404;
+        location ~* \.php$ { deny all; return 403; }
+    }
+    location ^~ /uploads/ {
+        try_files $uri $uri/ =404;
+        location ~* \.php$ { deny all; return 403; }
+    }
+    location ^~ /cache/ {
+        try_files $uri $uri/ =404;
+        location ~* \.php$ { deny all; return 403; }
+    }
+    location ^~ /files/ {
+        try_files $uri $uri/ =404;
+        location ~* \.php$ { deny all; return 403; }
+    }
+
+    # Block common attack and scanner paths
+    location ~* ^/(_ignition|telescope|horizon|laravel-websockets)(/|$) {
+        deny all;
+        return 403;
+    }
+    location ~* ^/(vendor/phpunit|phpunit|lib/phpunit)(/|$) {
+        deny all;
+        return 403;
+    }
+
+    # Block sensitive file access
+    location ~* \.(env|log|sql|bak|backup|swp|orig)$ {
+        deny all;
+        return 403;
     }'
 
     # Livewire block (Laravel sites only) — must include try_files to pass to PHP-FPM
-    LIVEWIRE_BLOCK='# Block bot exploitation of Livewire endpoint
+    LIVEWIRE_BLOCK='# Block bot exploitation of Livewire update endpoint
 location = /livewire/update {
     if ($http_user_agent ~* "python-requests|curl|wget|libwww|Go-http") {
         return 403;
     }
     limit_req zone=livewire burst=30 nodelay;
     limit_req_status 429;
+    try_files $uri /index.php?$query_string;
+}
+
+# Block Livewire file upload from bots (no referer = not a browser form)
+location = /livewire/upload-file {
+    if ($http_referer = "") {
+        return 403;
+    }
     try_files $uri /index.php?$query_string;
 }'
 

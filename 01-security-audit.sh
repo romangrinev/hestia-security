@@ -341,6 +341,34 @@ for user in "${USERS[@]}"; do
       queue_alert "WEBSHELL cache.php for $user" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
     fi
+
+    # 5. PHP files in directories that should only contain static assets
+    # These directories should NEVER contain .php files — any found is suspicious
+    STATIC_DIRS=("images" "img" "media" "uploads" "files" "assets" "pics" "photos" "pictures")
+    for static_dir in "${STATIC_DIRS[@]}"; do
+      RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
+        | grep -E "/${static_dir}/" \
+        | grep -v '/vendor/' \
+        | grep -v '/node_modules/' \
+        | grep -v '/.git/')
+      if [ -n "$RESULTS" ]; then
+        queue_alert "PHP IN STATIC DIR (/$static_dir/) for $user" "$RESULTS"
+        echo "$RESULTS" | tee -a "$FOUND_FILE"
+      fi
+    done
+
+    # 6. PHP files created in the last 24h inside public/ (excluding index.php and vendor)
+    # Legitimate deploys don't create new .php files in the web-served public/ directory
+    RESULTS=$(find "$WEB_DIR" -type f -name "*.php" -mmin -1440 2>/dev/null \
+      | grep '/public/' \
+      | grep -v '/vendor/' \
+      | grep -v '/node_modules/' \
+      | grep -v '/.git/' \
+      | grep -v '/index\.php$')
+    if [ -n "$RESULTS" ]; then
+      queue_alert "NEWLY CREATED PHP IN PUBLIC/ for $user (last 24h)" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
   fi
 done
 
