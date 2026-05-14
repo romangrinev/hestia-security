@@ -344,13 +344,18 @@ for user in "${USERS[@]}"; do
 
     # 5. PHP files in directories that should only contain static assets
     # These directories should NEVER contain .php files — any found is suspicious
+    # WordPress exclusions: wp-content/plugins/, wp-content/themes/, wp-includes/ legitimately
+    # store PHP files inside images/, files/, assets/ subdirs — these are not webshells.
     STATIC_DIRS=("images" "img" "media" "uploads" "files" "assets" "pics" "photos" "pictures")
     for static_dir in "${STATIC_DIRS[@]}"; do
       RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
         | grep -E "/${static_dir}/" \
         | grep -v '/vendor/' \
         | grep -v '/node_modules/' \
-        | grep -v '/.git/')
+        | grep -v '/.git/' \
+        | grep -v '/wp-content/plugins/' \
+        | grep -v '/wp-content/themes/' \
+        | grep -v '/wp-includes/')
       if [ -n "$RESULTS" ]; then
         queue_alert "PHP IN STATIC DIR (/$static_dir/) for $user" "$RESULTS"
         echo "$RESULTS" | tee -a "$FOUND_FILE"
