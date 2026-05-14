@@ -329,38 +329,39 @@ for user in "${USERS[@]}"; do
     [ -f "$domain_dir/artisan" ] && IS_LARAVEL=true
 
     # Base security block (all sites)
-    BASE_BLOCK='    # Block PHP execution in writable/static content directories
+    BASE_BLOCK='    # Block PHP/script execution in writable/static content directories
+    # Covers .php, .php3-.php8, .phtml, .phar (nginx+PHP-FPM, no Apache needed)
     location ^~ /storage/ {
         try_files $uri $uri/ /index.php?$args;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
     location ^~ /build/ {
         try_files $uri $uri/ =404;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
     location ^~ /images/ {
         try_files $uri $uri/ =404;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
     location ^~ /img/ {
         try_files $uri $uri/ =404;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
     location ^~ /media/ {
         try_files $uri $uri/ =404;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
     location ^~ /uploads/ {
         try_files $uri $uri/ =404;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
     location ^~ /cache/ {
         try_files $uri $uri/ =404;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
     location ^~ /files/ {
         try_files $uri $uri/ =404;
-        location ~* \.php$ { deny all; return 403; }
+        location ~* \.(php[3-8]?|phtml|phar)$ { deny all; return 403; }
     }
 
     # Block common attack and scanner paths
