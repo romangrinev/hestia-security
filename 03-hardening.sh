@@ -261,11 +261,18 @@ EOF
 cat > /usr/local/bin/file-monitor.sh << 'SCRIPT'
 #!/bin/bash
 WATCH_DIRS=""
-for user in $(v-list-users plain 2>/dev/null | awk '{print $1}' | grep -v "^admin$"); do
+for user in $(/usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}'); do
   [ -d "/home/$user/web" ] && WATCH_DIRS="$WATCH_DIRS /home/$user/web"
 done
 
-inotifywait -m -r -e create,modify,moved_to \
+if [ -z "$WATCH_DIRS" ]; then
+  # fallback: all /home/*/web directories
+  for d in /home/*/web; do
+    [ -d "$d" ] && WATCH_DIRS="$WATCH_DIRS $d"
+  done
+fi
+
+exec inotifywait -m -r -e create,modify,moved_to \
   --include '\.(php|js|html|sh|py|pl|phtml)$' \
   $WATCH_DIRS 2>/dev/null \
   | while read dir event file; do
