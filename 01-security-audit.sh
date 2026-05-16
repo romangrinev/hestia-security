@@ -274,6 +274,8 @@ PHP_WEBSHELL_PATTERNS=(
   'c99shell'
   'r57shell'
   'phpspy'
+  '/\* LP_'
+  'HTTP/1.0 404.*die()'
 )
 
 # Suspicious shell filenames (search everywhere including vendor/)
@@ -393,11 +395,36 @@ for user in "${USERS[@]}"; do
   fi
 done
 
-# 5. Specific: cron with .X11-linux (miner/backdoor)
+# 5. Specific: cron with .X11-linux or base64-encoded payload (miner/backdoor)
 for user in "${USERS[@]}"; do
   CRON_XLINUX=$(crontab -u "$user" -l 2>/dev/null | grep '\.X11-linux')
   if [ -n "$CRON_XLINUX" ]; then
     queue_alert "MINER IN CRON for $user (.X11-linux)" "$CRON_XLINUX"
+  fi
+  # Detect base64-encoded payloads in cron (attacker evasion technique)
+  CRON_BASE64=$(crontab -u "$user" -l 2>/dev/null | grep -E 'echo.*base64.*-d|base64 -d|base64 --decode' | grep -v '^#')
+  if [ -n "$CRON_BASE64" ]; then
+    queue_alert "BASE64 PAYLOAD IN CRON for $user (possible miner/backdoor)" "$CRON_BASE64"
+  fi
+done
+
+# 6. PHP files in storage/app/public/ — webshells via file-upload/Livewire RCE
+# Laravel framework NEVER writes PHP files to storage/app/public/ — any found = webshell
+log "Checking for PHP files in storage/app/public/ (upload RCE webshells)..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    STORAGE_PHP=$(find "$WEB_DIR" -type f \( -name "*.php" -o -name "*.phtml" -o -name "*.phar" \) \
+      -path "*/storage/app/public/*" 2>/dev/null \
+      | grep -v 'framework/views' \
+      | grep -v 'framework/sessions' \
+      | grep -v 'framework/testing')
+    if [ -n "$STORAGE_PHP" ]; then
+      queue_alert "WEBSHELL IN storage/app/public/ for $user (file-upload/Livewire RCE!)" "$STORAGE_PHP"
+      echo "$STORAGE_PHP" | tee -a "$REPORT_DIR/webshells-$user.txt"
+    else
+      log "✓ No PHP in storage/app/public/ for $user"
+    fi
   fi
 done
 
@@ -590,6 +617,25 @@ if [ -n "$TMP_EXEC" ]; then
   queue_alert "Executable files in /tmp" "$TMP_EXEC"
 else
   log "✓ No executable files in /tmp and /dev/shm"
+fi
+
+# Miner/backdoor detection: hidden executables in user home directories
+# Miners commonly hide in ~/.config/htop/, ~/.cache/, ~/.local/bin/ etc.
+log "Checking for hidden executables in user home directories (miner/backdoor)..."
+HIDDEN_EXEC=$(find /home -type f -executable \
+  \( -path "*/.config/*" -o -path "*/.cache/*" -o -path "*/.local/bin/*" \) \
+  2>/dev/null \
+  | grep -v '/.config/systemd/' \
+  | grep -v '/.config/dbus' \
+  | grep -v 'gvfs-metadata' \
+  | grep -v '/pulse/' \
+  | head -30)
+if [ -n "$HIDDEN_EXEC" ]; then
+  warn "SUSPICIOUS EXECUTABLES IN HIDDEN HOME DIRS:"
+  echo "$HIDDEN_EXEC" | tee "$REPORT_DIR/hidden-executables.txt"
+  queue_alert "Miner/backdoor: hidden executables in home dirs" "$HIDDEN_EXEC"
+else
+  log "✓ No suspicious hidden executables in home directories"
 fi
 
 # --- 13. SSH KEYS FOR ALL USERS ---
