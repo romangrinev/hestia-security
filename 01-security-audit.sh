@@ -542,10 +542,17 @@ done
 # SUID system-wide — alert only on non-standard files
 # Standard system SUID paths are excluded
 SUID_STANDARD='/usr/bin|/usr/sbin|/bin|/sbin|/usr/lib/openssh|/usr/lib/dbus|/usr/libexec/polkit|/usr/lib/mysql/plugin/auth_pam'
+# Known legitimate SUID files outside standard paths (whitelist)
+SUID_WHITELIST=(
+  /usr/lib/policykit-1/polkit-agent-helper-1  # PolicyKit auth agent
+  /usr/lib/eject/dmcrypt-get-device            # eject package
+  /usr/lib/snapd/snap-confine                  # snap sandbox
+)
 # Exclude /root/forensics/ — stores seized malware files (SUID bit intentionally removed)
 SUID_SUSPICIOUS=$(find / -perm /4000 -type f 2>/dev/null \
   | grep -vE "$SUID_STANDARD" \
-  | grep -v '/root/forensics/')
+  | grep -v '/root/forensics/' \
+  | grep -vF "$(printf '%s\n' "${SUID_WHITELIST[@]}")")
 find / -perm /4000 -type f 2>/dev/null > "$REPORT_DIR/suid-files.txt"
 if [ -n "$SUID_SUSPICIOUS" ]; then
   warn "NON-STANDARD SUID files (require review):"
