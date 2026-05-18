@@ -4,6 +4,13 @@
 # Run as root: sudo bash 01-security-audit.sh 2>&1 | tee audit-report.txt
 # =============================================================================
 
+LOCK_FILE="/var/lock/hestia-security-audit.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another security audit is already running; exiting."
+  exit 0
+fi
+
 # Auto-detect HestiaCP users (or set manually in /etc/security-audit.env)
 # USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then
@@ -256,26 +263,31 @@ log "=== 7. SEARCH FOR WEBSHELLS AND BACKDOORS ==="
 # Searching only in public_html root, public/, storage/, and other non-vendor paths.
 
 # Patterns for PHP files (excluding vendor/ and node_modules/)
-PHP_WEBSHELL_PATTERNS=(
+# Keep these split so we can scan each tree once with fixed strings and once
+# with regexes instead of rescanning the full tree per pattern.
+PHP_WEBSHELL_FIXED_PATTERNS=(
   'eval(base64_decode'
   'eval(gzinflate'
   'eval(str_rot13'
   'eval(gzuncompress'
-  'eval(\$_'
-  'assert(\$_'
-  'system(\$_'
-  'exec(\$_'
-  'passthru(\$_'
-  'shell_exec(\$_'
-  '\$_POST\[.*\].*eval'
-  'base64_decode.*eval'
   'FilesMan'
-  'WSO\b'
   'c99shell'
   'r57shell'
   'phpspy'
-  '/\* LP_'
-  'HTTP/1.0 404.*die()'
+  '/* LP_'
+)
+
+PHP_WEBSHELL_REGEX_PATTERNS=(
+  'eval\(\$_'
+  'assert\(\$_'
+  'system\(\$_'
+  'exec\(\$_'
+  'passthru\(\$_'
+  'shell_exec\(\$_'
+  '\$_POST\[.*\].*eval'
+  'base64_decode.*eval'
+  'WSO\b'
+  'HTTP/1\.0 404.*die\(\)'
 )
 
 # Suspicious shell filenames (search everywhere including vendor/)
@@ -286,6 +298,70 @@ SHELL_FILENAMES=(
   'wp-conffq.php'
   'wp-headre.php'
 )
+SHELL_FILENAME_EXPR=( -name 'shc.php' -o -name 'adminfuns.php' -o -name 'wp-conffq.php' -o -name 'wp-headre.php' )
+
+is_known_safe_php_file() {
+  local file_path="$1"
+
+  case "$file_path" in
+    */wp-content/plugins/insert-headers-and-footers/includes/class-wpcode-snippet-execute.php)
+      return 0
+      ;;
+    */wp-content/uploads/wpforms/cache/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/import/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/export/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/temp/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/upload/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/alm_templates/default.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-lister/templates/*/*.php)
+      return 0
+      ;;
+    */wp-content/plugins.bak/*/*.asset.php)
+      return 0
+      ;;
+    */wp-content/plugins.old/*/*.asset.php)
+      return 0
+      ;;
+    */wp-content/plugins.bak/wp-mail-smtp/assets/languages/wp-mail-smtp-vue.php)
+      return 0
+      ;;
+  esac
+
+  if [ "$(basename "$file_path")" = "index.php" ] && grep -q "Silence is golden" "$file_path" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+filter_known_safe_results() {
+  while IFS= read -r file_path; do
+    [ -n "$file_path" ] || continue
+    if ! is_known_safe_php_file "$file_path"; then
+      printf '%s\n' "$file_path"
+    fi
+  done
+}
+
+FIXED_PATTERN_FILE="$REPORT_DIR/php-webshell-fixed-patterns.txt"
+REGEX_PATTERN_FILE="$REPORT_DIR/php-webshell-regex-patterns.txt"
+printf '%s\n' "${PHP_WEBSHELL_FIXED_PATTERNS[@]}" > "$FIXED_PATTERN_FILE"
+printf '%s\n' "${PHP_WEBSHELL_REGEX_PATTERNS[@]}" > "$REGEX_PATTERN_FILE"
 
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
@@ -294,26 +370,39 @@ for user in "${USERS[@]}"; do
     echo "" > "$FOUND_FILE"
 
     # 1. Search for malicious patterns in PHP files, excluding vendor/ and node_modules/
-    for pattern in "${PHP_WEBSHELL_PATTERNS[@]}"; do
-      RESULTS=$(grep -rl "$pattern" "$WEB_DIR" 2>/dev/null \
-        | grep -E '\.(php|php5|php7|phtml|phar)$' \
-        | grep -v '/.git/' \
-        | grep -v '/vendor/' \
-        | grep -v '/node_modules/')
-      if [ -n "$RESULTS" ]; then
-        queue_alert "BACKDOOR for $user (pattern: $pattern)" "$RESULTS"
-        echo "$RESULTS" | tee -a "$FOUND_FILE"
-      fi
-    done
+    # Scan each tree once per pattern type to avoid N x pattern full-tree rescans.
+    RESULTS_FIXED=$(grep -rIlF -f "$FIXED_PATTERN_FILE" "$WEB_DIR" \
+      --include='*.php' \
+      --include='*.php5' \
+      --include='*.php7' \
+      --include='*.phtml' \
+      --include='*.phar' \
+      --exclude-dir='.git' \
+      --exclude-dir='vendor' \
+      --exclude-dir='node_modules' 2>/dev/null)
+    RESULTS_REGEX=$(grep -rIlE -f "$REGEX_PATTERN_FILE" "$WEB_DIR" \
+      --include='*.php' \
+      --include='*.php5' \
+      --include='*.php7' \
+      --include='*.phtml' \
+      --include='*.phar' \
+      --exclude-dir='.git' \
+      --exclude-dir='vendor' \
+      --exclude-dir='node_modules' 2>/dev/null)
+    RESULTS=$(printf '%s\n%s\n' "$RESULTS_FIXED" "$RESULTS_REGEX" | sed '/^$/d' | sort -u)
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
+    if [ -n "$RESULTS" ]; then
+      queue_alert "BACKDOOR indicators for $user" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
 
     # 2. Search by suspicious filenames (everywhere)
-    for fname in "${SHELL_FILENAMES[@]}"; do
-      RESULTS=$(find "$WEB_DIR" -name "$fname" 2>/dev/null | grep -v '/.git/')
-      if [ -n "$RESULTS" ]; then
-        queue_alert "SUSPICIOUS FILE for $user ($fname)" "$RESULTS"
-        echo "$RESULTS" | tee -a "$FOUND_FILE"
-      fi
-    done
+    RESULTS=$(find "$WEB_DIR" \( "${SHELL_FILENAME_EXPR[@]}" \) 2>/dev/null | grep -v '/.git/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
+    if [ -n "$RESULTS" ]; then
+      queue_alert "SUSPICIOUS FILE for $user" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
 
     # 3. PHP files with hex names (8+ hex chars) — typical for droppers
     # Exclude storage/framework/views/ — legitimate compiled Laravel Blade templates
@@ -322,6 +411,7 @@ for user in "${USERS[@]}"; do
       | grep -v '/.git/' \
       | grep -v '/storage/framework/views/' \
       | grep -v '/vendor/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
     if [ -n "$RESULTS" ]; then
       queue_alert "PHP DROPPER (hex name) for $user" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
@@ -339,6 +429,7 @@ for user in "${USERS[@]}"; do
       | grep -v '/wp-includes/' \
       | grep -v '/wp-content/themes/' \
       | grep -E '/(public|storage|upload|assets|build|tmp|cache|files)/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
     if [ -n "$RESULTS" ]; then
       queue_alert "WEBSHELL cache.php for $user" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
@@ -348,21 +439,20 @@ for user in "${USERS[@]}"; do
     # These directories should NEVER contain .php files — any found is suspicious
     # WordPress exclusions: wp-content/plugins/, wp-content/themes/, wp-includes/ legitimately
     # store PHP files inside images/, files/, assets/ subdirs — these are not webshells.
-    STATIC_DIRS=("images" "img" "media" "uploads" "files" "assets" "pics" "photos" "pictures")
-    for static_dir in "${STATIC_DIRS[@]}"; do
-      RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
-        | grep -E "/${static_dir}/" \
-        | grep -v '/vendor/' \
-        | grep -v '/node_modules/' \
-        | grep -v '/.git/' \
-        | grep -v '/wp-content/plugins/' \
-        | grep -v '/wp-content/themes/' \
-        | grep -v '/wp-includes/')
-      if [ -n "$RESULTS" ]; then
-        queue_alert "PHP IN STATIC DIR (/$static_dir/) for $user" "$RESULTS"
-        echo "$RESULTS" | tee -a "$FOUND_FILE"
-      fi
-    done
+    STATIC_DIRS_REGEX='/(images|img|media|uploads|files|assets|pics|photos|pictures)/'
+    RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
+      | grep -E "$STATIC_DIRS_REGEX" \
+      | grep -v '/vendor/' \
+      | grep -v '/node_modules/' \
+      | grep -v '/.git/' \
+      | grep -v '/wp-content/plugins/' \
+      | grep -v '/wp-content/themes/' \
+      | grep -v '/wp-includes/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
+    if [ -n "$RESULTS" ]; then
+      queue_alert "PHP IN STATIC DIR for $user" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
 
     # 6. PHP files created in the last 24h inside public/ (excluding index.php and vendor)
     # Legitimate deploys don't create new .php files in the web-served public/ directory
@@ -372,6 +462,7 @@ for user in "${USERS[@]}"; do
       | grep -v '/node_modules/' \
       | grep -v '/.git/' \
       | grep -v '/index\.php$')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
     if [ -n "$RESULTS" ]; then
       queue_alert "NEWLY CREATED PHP IN PUBLIC/ for $user (last 24h)" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
@@ -481,9 +572,14 @@ CRITICAL_BINS=(
 )
 BINARY_REPORT="$REPORT_DIR/binary-integrity.txt"
 BINARY_ALERTS=()
+CHECKED_INODES=()
 
 for bin in "${CRITICAL_BINS[@]}"; do
   [ -f "$bin" ] || continue
+  # Skip if this inode was already checked (usr-merge deduplication)
+  BIN_INODE=$(stat -c '%i' "$bin" 2>/dev/null)
+  if [[ " ${CHECKED_INODES[*]} " == *" $BIN_INODE "* ]]; then continue; fi
+  CHECKED_INODES+=("$BIN_INODE")
   FILE_OUT=$(file "$bin" 2>/dev/null)
 
   # Indicator 1: statically linked — atypical for Ubuntu system binaries
@@ -503,7 +599,15 @@ for bin in "${CRITICAL_BINS[@]}"; do
   fi
 
   # Indicator 3: file absent from dpkg database
+  # Ubuntu 20.04+ usr-merge: /bin → /usr/bin symlink, so dpkg may register
+  # the binary under either path. Try both, then fall back to inode match.
+  DPKG_PATH="$bin"
   PKG=$(dpkg -S "$bin" 2>/dev/null | cut -d: -f1)
+  if [ -z "$PKG" ]; then
+    ALT_BIN=$(echo "$bin" | sed 's|^/usr/bin/|/bin/|; s|^/usr/sbin/|/sbin/|; s|^/bin/|/usr/bin/|; s|^/sbin/|/usr/sbin/|')
+    PKG=$(dpkg -S "$ALT_BIN" 2>/dev/null | cut -d: -f1)
+    [ -n "$PKG" ] && DPKG_PATH="$ALT_BIN"
+  fi
   if [ -z "$PKG" ]; then
     msg="NOT REGISTERED IN DPKG (file removed from package database): $bin"
     warn "$msg"
@@ -511,7 +615,8 @@ for bin in "${CRITICAL_BINS[@]}"; do
     BINARY_ALERTS+=("$msg")
   else
     # Indicator 4: dpkg --verify reports checksum mismatch
-    VERIFY_OUT=$(dpkg --verify "$PKG" 2>/dev/null | grep "$bin")
+    # Use the path dpkg actually knows about (DPKG_PATH, not $bin)
+    VERIFY_OUT=$(dpkg --verify "$PKG" 2>/dev/null | grep -F "$DPKG_PATH")
     if [ -n "$VERIFY_OUT" ]; then
       msg="DPKG CHECKSUM MISMATCH: $bin — $VERIFY_OUT"
       warn "$msg"
@@ -580,22 +685,32 @@ HTACCESS_BAD_PATTERNS='php_value auto_prepend|SetHandler.*cgi|AddHandler.*php|Re
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
+    mapfile -t HTACCESS_FILES < <(find "$WEB_DIR" -name ".htaccess" 2>/dev/null)
     # Save all htaccess to report silently
-    find "$WEB_DIR" -name ".htaccess" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null \
-      >> "$REPORT_DIR/htaccess-$user.txt"
+    if [ "${#HTACCESS_FILES[@]}" -gt 0 ]; then
+      printf '%s\0' "${HTACCESS_FILES[@]}" | xargs -0 -I{} sh -c 'echo "=== {} ==="; cat "{}"' 2>/dev/null \
+        >> "$REPORT_DIR/htaccess-$user.txt"
+    fi
     # Alert only on suspicious patterns
-    HTACCESS_SUSPICIOUS=$(grep -rniE "$HTACCESS_BAD_PATTERNS" \
-      $(find "$WEB_DIR" -name ".htaccess" 2>/dev/null) 2>/dev/null)
+    HTACCESS_SUSPICIOUS=""
+    if [ "${#HTACCESS_FILES[@]}" -gt 0 ]; then
+      HTACCESS_SUSPICIOUS=$(printf '%s\0' "${HTACCESS_FILES[@]}" | xargs -0 grep -nHiE "$HTACCESS_BAD_PATTERNS" 2>/dev/null)
+    fi
     if [ -n "$HTACCESS_SUSPICIOUS" ]; then
       warn "Suspicious .htaccess for $user:"
       echo "$HTACCESS_SUSPICIOUS" | tee -a "$REPORT_DIR/htaccess-$user.txt"
       queue_alert ".htaccess injection for $user" "$HTACCESS_SUSPICIOUS"
     fi
     # .user.ini — save silently, alert only on suspicious entries
-    find "$WEB_DIR" -name ".user.ini" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null \
-      >> "$REPORT_DIR/user-ini-$user.txt"
-    USERINI_SUSPICIOUS=$(grep -rniE "auto_prepend_file|auto_append_file|open_basedir\s*=\s*none" \
-      $(find "$WEB_DIR" -name ".user.ini" 2>/dev/null) 2>/dev/null)
+    mapfile -t USERINI_FILES < <(find "$WEB_DIR" -name ".user.ini" 2>/dev/null)
+    if [ "${#USERINI_FILES[@]}" -gt 0 ]; then
+      printf '%s\0' "${USERINI_FILES[@]}" | xargs -0 -I{} sh -c 'echo "=== {} ==="; cat "{}"' 2>/dev/null \
+        >> "$REPORT_DIR/user-ini-$user.txt"
+    fi
+    USERINI_SUSPICIOUS=""
+    if [ "${#USERINI_FILES[@]}" -gt 0 ]; then
+      USERINI_SUSPICIOUS=$(printf '%s\0' "${USERINI_FILES[@]}" | xargs -0 grep -nHiE "auto_prepend_file\s*=\s*[^[:space:]]+|auto_append_file\s*=\s*[^[:space:]]+|open_basedir\s*=\s*none" 2>/dev/null)
+    fi
     if [ -n "$USERINI_SUSPICIOUS" ]; then
       warn "Suspicious .user.ini for $user:"
       echo "$USERINI_SUSPICIOUS" | tee -a "$REPORT_DIR/user-ini-$user.txt"
@@ -629,6 +744,7 @@ HIDDEN_EXEC=$(find /home -type f -executable \
   | grep -v '/.config/dbus' \
   | grep -v 'gvfs-metadata' \
   | grep -v '/pulse/' \
+  | grep -v '/.cache/composer/vcs/.*/hooks/.*\.sample$' \
   | head -30)
 if [ -n "$HIDDEN_EXEC" ]; then
   warn "SUSPICIOUS EXECUTABLES IN HIDDEN HOME DIRS:"
