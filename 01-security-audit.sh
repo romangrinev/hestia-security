@@ -521,6 +521,108 @@ for user in "${USERS[@]}"; do
   fi
 done
 
+# 7. Laravel storage/framework/maintenance.php — goto-obfuscated SEO cloaker hiding spot
+# Legit Laravel writes this file ONLY while `php artisan down` is active. Content is a small
+# (~500B) PHP stub that either renders 503 or `return require __DIR__.'/down';`. Anything
+# bigger or containing obfuscation markers = malware (auto-required by public/index.php
+# BEFORE Laravel bootstrap, so it executes on every request without leaving framework traces).
+# Reference: incident 2026-05-25 grinev.studio — 17KB goto-obfuscated cloaker calling out
+# to 198.204.224.178 (opboot.icu C&C).
+log "Checking Laravel storage/framework/maintenance.php integrity..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    while IFS= read -r mfile; do
+      [ -n "$mfile" ] || continue
+      SIZE=$(stat -c%s "$mfile" 2>/dev/null || echo 0)
+      # Legit Laravel maintenance stub is <2KB. Anything bigger = suspicious.
+      if [ "$SIZE" -gt 2048 ]; then
+        queue_alert "LARAVEL maintenance.php OVERSIZED for $user (likely cloaker, ${SIZE}B)" \
+          "$mfile (size: $SIZE bytes — legit is ~500B)"
+        echo "$mfile size=$SIZE" >> "$REPORT_DIR/webshells-$user.txt"
+      elif [ "$SIZE" -gt 0 ]; then
+        # Even small file: alert if it contains obfuscation markers or network calls
+        if grep -qE 'goto [A-Za-z0-9_]{10,};|curl_init|file_get_contents.*http|fsockopen|eval\(' "$mfile" 2>/dev/null; then
+          queue_alert "LARAVEL maintenance.php WITH SUSPICIOUS CODE for $user" \
+            "$mfile contains obfuscation/network calls — investigate"
+          echo "$mfile (suspicious content)" >> "$REPORT_DIR/webshells-$user.txt"
+        fi
+      fi
+    done < <(find "$WEB_DIR" -path "*/storage/framework/maintenance.php" 2>/dev/null)
+  fi
+done
+
+# 8. Unexpected PHP files in bootstrap/cache/ — Laravel autoloads compiled files from here
+# Legit files: services.php, packages.php, config.php, routes-v7.php, compiled.php,
+#   events.php, container.php (Laravel 11+), plus per-package caches like blade-icons.php,
+#   livewire-components.php, filament-*.php — these are written by package service providers.
+# Suspicious: digit-prefixed names (e.g., 1index.php), names matching index/loader/cache,
+#   or random hex names — staged payloads (incident 2026-05-25 grinev.studio dropped
+#   202KB encrypted backdoor as `1index.php` here).
+log "Checking Laravel bootstrap/cache/ for unexpected PHP files..."
+LARAVEL_CACHE_WHITELIST='^(services|packages|config|routes-v[0-9]+|compiled|events|container|blade-icons|livewire-components|filament-[a-z0-9-]+|[a-z][a-z0-9-]*-components|[a-z][a-z0-9-]*-icons)\.php$'
+LARAVEL_CACHE_SUSPICIOUS_NAME='^([0-9]|.*index|.*loader|.*shell|.*cache\.php$|[0-9a-f]{8,}\.php$)'
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    UNEXPECTED=$(find "$WEB_DIR" -path "*/bootstrap/cache/*.php" 2>/dev/null \
+      | while IFS= read -r f; do
+          bn=$(basename "$f")
+          # Skip if matches whitelist
+          echo "$bn" | grep -qE "$LARAVEL_CACHE_WHITELIST" && continue
+          # Alert if matches suspicious name pattern OR size > 50KB
+          # (legit compiled caches rarely exceed 50KB; cloakers are 200KB+)
+          sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+          if echo "$bn" | grep -qE "$LARAVEL_CACHE_SUSPICIOUS_NAME" || [ "$sz" -gt 51200 ]; then
+            echo "$f (size: $sz)"
+          fi
+        done)
+    if [ -n "$UNEXPECTED" ]; then
+      queue_alert "UNEXPECTED PHP IN bootstrap/cache/ for $user (staged payload?)" "$UNEXPECTED"
+      echo "$UNEXPECTED" >> "$REPORT_DIR/webshells-$user.txt"
+    fi
+  fi
+done
+
+# 9. Goto-obfuscation density — PHP files outside vendor/ with >20 `goto LABEL;` statements
+# Modern legit PHP almost never uses `goto`. Obfuscators (incl. the maintenance.php cloaker)
+# rely heavily on goto with random hex/alphanumeric labels to flatten control flow.
+log "Checking for goto-obfuscated PHP files..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    # Find PHP files outside vendor/node_modules and count `goto <label>;` occurrences
+    GOTO_HITS=$(find "$WEB_DIR" -type f -name "*.php" \
+      ! -path "*/vendor/*" ! -path "*/node_modules/*" ! -path "*/.git/*" \
+      ! -path "*/storage/framework/views/*" 2>/dev/null \
+      | while IFS= read -r f; do
+          n=$(grep -cE 'goto [A-Za-z0-9_]{10,};' "$f" 2>/dev/null || echo 0)
+          [ "$n" -gt 20 ] && echo "$f (goto-count: $n)"
+        done)
+    if [ -n "$GOTO_HITS" ]; then
+      queue_alert "GOTO-OBFUSCATED PHP for $user (likely malware loader)" "$GOTO_HITS"
+      echo "$GOTO_HITS" >> "$REPORT_DIR/webshells-$user.txt"
+    fi
+  fi
+done
+
+# 10. Known-bad IOC: hardcoded malware C&C indicators
+# Add new indicators here as incidents accumulate.
+KNOWN_BAD_IOC='198\.204\.224\.178|opboot\.icu|zs898v13'
+log "Checking for known-bad C&C indicators (IOCs)..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    IOC_HITS=$(grep -rIlE "$KNOWN_BAD_IOC" "$WEB_DIR" \
+      --include='*.php' --include='*.phtml' --include='*.phar' --include='*.inc' \
+      --exclude-dir='.git' --exclude-dir='node_modules' 2>/dev/null)
+    if [ -n "$IOC_HITS" ]; then
+      queue_alert "KNOWN-BAD C&C INDICATOR for $user" "$IOC_HITS"
+      echo "$IOC_HITS" >> "$REPORT_DIR/webshells-$user.txt"
+    fi
+  fi
+done
+
 # --- 8. FILES WITH DANGEROUS PERMISSIONS ---
 log "=== 8. FILES WITH 777/SUID PERMISSIONS ==="
 for user in "${USERS[@]}"; do
@@ -670,6 +772,24 @@ for user in "${USERS[@]}"; do
     fi
   done
 done
+
+# --- 9b. ACTIVE OUTBOUND CONNECTIONS FROM PHP-FPM ---
+# PHP-FPM workers should not be initiating outbound TCP connections except to local
+# services (DB, redis, etc.). Outbound to public IPs strongly indicates a cloaker or
+# C&C beacon. Skips RFC1918, loopback and link-local destinations.
+log "=== 9b. PHP-FPM OUTBOUND CONNECTIONS ==="
+if command -v ss >/dev/null 2>&1; then
+  PHP_OUT=$(ss -tnpH state established 2>/dev/null \
+    | grep -E 'php-fpm|"php"' \
+    | awk '{print $4" -> "$5}' \
+    | grep -vE '-> (127\.|::1|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|\[::1\]|\[fe80)')
+  if [ -n "$PHP_OUT" ]; then
+    queue_alert "PHP-FPM OUTBOUND TO PUBLIC IP (possible C&C beacon)" "$PHP_OUT"
+    echo "$PHP_OUT" | tee "$REPORT_DIR/php-fpm-outbound.txt"
+  else
+    log "✓ No PHP-FPM outbound to public IPs"
+  fi
+fi
 
 # --- 10. PHP CONFIGURATION ---
 log "=== 10. PHP CONFIGURATION ==="
