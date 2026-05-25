@@ -764,23 +764,48 @@ else
 fi
 
 # --- 13. SSH KEYS FOR ALL USERS ---
+# Alert only when keys actually change (hash-based baseline), not just by mtime.
+# To accept current keys as baseline: rm /var/lib/security-audit/ssh-key-baseline.sha256
 log "=== 13. SSH KEYS ==="
+SSH_BASELINE_DIR="/var/lib/security-audit"
+SSH_BASELINE_FILE="$SSH_BASELINE_DIR/ssh-key-baseline.sha256"
+mkdir -p "$SSH_BASELINE_DIR"
+# Build current hash of all authorized_keys files
+CURRENT_SSH_HASH=$(for user in "${USERS[@]}" root; do
+  HOME_DIR=$(eval echo "~$user")
+  AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
+  [ -f "$AUTH_KEYS" ] && echo "$user" && cat "$AUTH_KEYS"
+done | sha256sum | awk '{print $1}')
+
 for user in "${USERS[@]}" root; do
   HOME_DIR=$(eval echo "~$user")
   AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
   if [ -f "$AUTH_KEYS" ]; then
-    # Save all keys to report silently
     echo "=== $user ==" >> "$REPORT_DIR/ssh-keys.txt"
     cat "$AUTH_KEYS" >> "$REPORT_DIR/ssh-keys.txt"
-    # Alert only if key file was recently modified (within 7 days)
-    if find "$AUTH_KEYS" -mtime -7 2>/dev/null | grep -q .; then
-      KEYS_CONTENT=$(cat "$AUTH_KEYS")
-      warn "Recently modified SSH keys for user $user:"
-      echo "$KEYS_CONTENT"
-      queue_alert "SSH keys modified for $user" "$KEYS_CONTENT"
-    fi
   fi
 done
+
+if [ ! -f "$SSH_BASELINE_FILE" ]; then
+  # First run — save baseline, no alert
+  echo "$CURRENT_SSH_HASH" > "$SSH_BASELINE_FILE"
+  log "✓ SSH key baseline established ($(grep -c 'ssh-' "$REPORT_DIR/ssh-keys.txt" 2>/dev/null || echo 0) keys)"
+else
+  SAVED_SSH_HASH=$(cat "$SSH_BASELINE_FILE")
+  if [ "$CURRENT_SSH_HASH" != "$SAVED_SSH_HASH" ]; then
+    KEYS_DIFF=$(for user in "${USERS[@]}" root; do
+      HOME_DIR=$(eval echo "~$user")
+      AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
+      [ -f "$AUTH_KEYS" ] && echo "=== $user ===" && cat "$AUTH_KEYS"
+    done)
+    warn "SSH authorized_keys changed since last baseline!"
+    queue_alert "SSH keys changed" "$KEYS_DIFF"
+    # Auto-update baseline after alerting (alert fires once per change)
+    echo "$CURRENT_SSH_HASH" > "$SSH_BASELINE_FILE"
+  else
+    log "✓ SSH keys unchanged since baseline"
+  fi
+fi
 KEY_COUNT=$(grep -c 'ssh-' "$REPORT_DIR/ssh-keys.txt" 2>/dev/null || echo 0)
 log "SSH keys saved to report ($KEY_COUNT keys total)"
 
