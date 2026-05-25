@@ -188,11 +188,11 @@ else
   log "✓ MySQL not accessible externally"
 fi
 
-# Check: fail2ban chains exist
-if iptables -L f2b-sshd -n &>/dev/null; then
-  log "✓ fail2ban active (f2b-sshd chain found)"
+# Check: fail2ban is running (supports both iptables and nftables backends)
+if systemctl is-active --quiet fail2ban && fail2ban-client status sshd &>/dev/null; then
+  log "✓ fail2ban active (sshd jail running)"
 else
-  queue_alert "fail2ban not active" "f2b-sshd chain not found in iptables — fail2ban may not be running"
+  queue_alert "fail2ban not active" "fail2ban service not running or sshd jail missing"
 fi
 
 # --- 5. CRON JOBS FOR ALL USERS ---
