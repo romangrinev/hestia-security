@@ -72,7 +72,14 @@ for user in "${USERS[@]}"; do
 
       # Roll back
       sudo -u "$user" git -C "$REPO" checkout -- . 2>/dev/null
-      sudo -u "$user" git -C "$REPO" clean -fd 2>/dev/null
+      # Preserve forensic/quarantine artefacts so incident response workflow
+      # is not undone by the next cron tick (chattr +i alone also blocks
+      # `git clean`, but excluding the patterns avoids the noisy alert loop).
+      sudo -u "$user" git -C "$REPO" clean -fd \
+        -e '*.QUARANTINED' \
+        -e '*.malware-bak' \
+        -e '.malware-quarantine-*' \
+        2>/dev/null
       log "✓ Rollback complete: $REPO"
 
       # Notify via Resend
