@@ -180,7 +180,7 @@ maxretry = 2
 enabled = true
 port    = http,https
 filter  = php-url-fopen
-logpath = /home/*/web/*/log/access.log
+logpath = /var/log/nginx/domains/*.log
 maxretry = 2
 EOF
 

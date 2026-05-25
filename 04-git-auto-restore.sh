@@ -4,6 +4,13 @@
 # Can be added to cron: 0 */6 * * * root bash /root/04-git-auto-restore.sh
 # =============================================================================
 
+LOCK_FILE="/var/lock/hestia-git-auto-restore.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another git auto-restore run is already running; exiting."
+  exit 0
+fi
+
 # Auto-detect HestiaCP users (or set manually)
 # USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then

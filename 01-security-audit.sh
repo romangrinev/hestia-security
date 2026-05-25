@@ -15,9 +15,9 @@ fi
 # USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then
   if command -v v-list-users &>/dev/null; then
-    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}')
+    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}' | sort -u)
   else
-    mapfile -t USERS < <(ls /home/ | grep -vE '^(admin|lost\+found|ubuntu)$')
+    mapfile -t USERS < <(ls /home/ | grep -vE '^(admin|lost\+found|ubuntu)$' | sort -u)
   fi
 fi
 
@@ -501,12 +501,14 @@ done
 
 # 6. PHP files in storage/app/public/ — webshells via file-upload/Livewire RCE
 # Laravel framework NEVER writes PHP files to storage/app/public/ — any found = webshell
+# Also checks hidden-name files like .cache.php, .bak.php (dot-prefix evasion)
 log "Checking for PHP files in storage/app/public/ (upload RCE webshells)..."
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
-    STORAGE_PHP=$(find "$WEB_DIR" -type f \( -name "*.php" -o -name "*.phtml" -o -name "*.phar" \) \
-      -path "*/storage/app/public/*" 2>/dev/null \
+    STORAGE_PHP=$(find "$WEB_DIR" -path "*/storage/app/public/*" 2>/dev/null \
+      \( -name "*.php" -o -name "*.phtml" -o -name "*.phar" \
+         -o -name ".*.php" -o -name ".*.phtml" -o -name ".*.phar" \) \
       | grep -v 'framework/views' \
       | grep -v 'framework/sessions' \
       | grep -v 'framework/testing')
@@ -692,7 +694,7 @@ HTACCESS_BAD_PATTERNS='php_value auto_prepend|SetHandler.*cgi|AddHandler.*php|Re
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
-    mapfile -t HTACCESS_FILES < <(find "$WEB_DIR" -name ".htaccess" 2>/dev/null)
+    mapfile -t HTACCESS_FILES < <(find "$WEB_DIR" -name ".htaccess" ! -path "*/vendor/*" ! -path "*/node_modules/*" 2>/dev/null)
     # Save all htaccess to report silently
     if [ "${#HTACCESS_FILES[@]}" -gt 0 ]; then
       printf '%s\0' "${HTACCESS_FILES[@]}" | xargs -0 -I{} sh -c 'echo "=== {} ==="; cat "{}"' 2>/dev/null \
@@ -709,7 +711,7 @@ for user in "${USERS[@]}"; do
       queue_alert ".htaccess injection for $user" "$HTACCESS_SUSPICIOUS"
     fi
     # .user.ini — save silently, alert only on suspicious entries
-    mapfile -t USERINI_FILES < <(find "$WEB_DIR" -name ".user.ini" 2>/dev/null)
+    mapfile -t USERINI_FILES < <(find "$WEB_DIR" -name ".user.ini" ! -path "*/vendor/*" ! -path "*/node_modules/*" 2>/dev/null)
     if [ "${#USERINI_FILES[@]}" -gt 0 ]; then
       printf '%s\0' "${USERINI_FILES[@]}" | xargs -0 -I{} sh -c 'echo "=== {} ==="; cat "{}"' 2>/dev/null \
         >> "$REPORT_DIR/user-ini-$user.txt"
