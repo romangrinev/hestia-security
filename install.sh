@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# INSTALL SCRIPT — установка security scripts на HestiaCP сервер
-# Запускать от root: bash install.sh
+# INSTALL SCRIPT — install security scripts on a HestiaCP server
+# Run as root: bash install.sh
 # =============================================================================
 set -e
 
@@ -10,28 +10,28 @@ log()  { echo -e "${GRN}[+]${NC} $1"; }
 warn() { echo -e "${YLW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
-[ "$(id -u)" -ne 0 ] && err "Запускайте от root: sudo bash install.sh"
+[ "$(id -u)" -ne 0 ] && err "Run as root: sudo bash install.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --- 1. Конфиг ---
+# --- 1. Config ---
 if [ ! -f /etc/security-audit.env ]; then
   cp "$SCRIPT_DIR/security-audit.env.example" /etc/security-audit.env
   chmod 600 /etc/security-audit.env
-  warn "Создан /etc/security-audit.env — заполните RESEND_API_KEY и RESEND_TO"
-  warn "Затем повторно запустите install.sh или настройте cron вручную"
+  warn "Created /etc/security-audit.env — fill in RESEND_API_KEY and RESEND_TO"
+  warn "Then re-run install.sh or configure cron manually"
 else
-  log "/etc/security-audit.env уже существует"
+  log "/etc/security-audit.env already exists"
 fi
 
-# --- 2. Зависимости ---
-log "Проверка зависимостей..."
+# --- 2. Dependencies ---
+log "Checking dependencies..."
 apt-get install -y curl git inotify-tools fail2ban >/dev/null 2>&1
-log "Зависимости установлены"
+log "Dependencies installed"
 
-# --- 3. Права на скрипты ---
+# --- 3. Script permissions ---
 chmod +x "$SCRIPT_DIR"/*.sh
-log "Права на скрипты выставлены"
+log "Script permissions set"
 
 # --- 4. Cron ---
 CRON_FILE="/etc/cron.d/security-monitoring"
@@ -41,27 +41,27 @@ if [ ! -f "$CRON_FILE" ]; then
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-# Ежедневный аудит безопасности в 3:00
+# Daily security audit at 3:00
 0 3 * * * root bash ${SCRIPT_DIR}/01-security-audit.sh >> /var/log/security-audit.log 2>&1
 
-# Авто-восстановление git каждые 6 часов
+# Git auto-restore every 6 hours
 0 */6 * * * root bash ${SCRIPT_DIR}/04-git-auto-restore.sh >> /var/log/git-auto-restore.log 2>&1
 EOF
-  log "Cron создан: $CRON_FILE"
+  log "Cron created: $CRON_FILE"
 else
-  log "Cron уже существует: $CRON_FILE"
+  log "Cron already exists: $CRON_FILE"
 fi
 
-# --- 5. Итог ---
+# --- 5. Summary ---
 echo ""
 log "============================================================"
-log "Установка завершена!"
+log "Installation complete!"
 log "============================================================"
 echo ""
-echo "  Следующие шаги:"
-echo "  1. Заполните /etc/security-audit.env (RESEND_API_KEY, RESEND_TO)"
-echo "  2. Запустите хардинг: sudo bash ${SCRIPT_DIR}/03-hardening.sh"
-echo "  3. Запустите аудит:   sudo bash ${SCRIPT_DIR}/01-security-audit.sh"
+echo "  Next steps:"
+echo "  1. Fill in /etc/security-audit.env (RESEND_API_KEY, RESEND_TO)"
+echo "  2. Run hardening: sudo bash ${SCRIPT_DIR}/03-hardening.sh"
+echo "  3. Run audit:     sudo bash ${SCRIPT_DIR}/01-security-audit.sh"
 echo ""
-warn "Аудит запускается автоматически каждый день в 3:00 (UTC)"
-warn "Git auto-restore — каждые 6 часов"
+warn "Audit runs automatically every day at 3:00 (UTC)"
+warn "Git auto-restore — every 6 hours"

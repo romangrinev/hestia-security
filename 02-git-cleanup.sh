@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================================
-# GIT CLEANUP SCRIPT — очистка всех проектов через git
-# Запускать от root: sudo bash 02-git-cleanup.sh 2>&1 | tee cleanup-report.txt
+# GIT CLEANUP SCRIPT — clean all projects via git
+# Run as root: sudo bash 02-git-cleanup.sh 2>&1 | tee cleanup-report.txt
 #
-# ВНИМАНИЕ: git clean -fd удалит неотслеживаемые файлы!
-# Загруженные пользователями медиафайлы должны быть в .gitignore
-# Перед запуском убедитесь что storage/, uploads/ и т.д. в .gitignore
+# WARNING: git clean -fd will delete untracked files!
+# User-uploaded media files must be in .gitignore
+# Before running, ensure storage/, uploads/, etc. are in .gitignore
 # =============================================================================
 
-# Авто-определение пользователей HestiaCP (или задайте вручную)
-# USERS=("user1" "user2")   # раскомментируйте чтобы переопределить
+# Auto-detect HestiaCP users (or set manually)
+# USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then
   if command -v v-list-users &>/dev/null; then
     mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}')
@@ -36,55 +36,55 @@ cleanup_git_repo() {
   local OWNER="$2"
 
   if [ ! -d "$REPO_DIR/.git" ]; then
-    warn "Не git-репозиторий: $REPO_DIR — пропускаем"
+    warn "Not a git repository: $REPO_DIR — skipping"
     return
   fi
 
-  log "Очищаем: $REPO_DIR (владелец: $OWNER)"
+  log "Cleaning: $REPO_DIR (owner: $OWNER)"
 
-  # Показываем что изменено перед очисткой
-  echo "--- Изменённые файлы:"
+  # Show what is modified before cleaning
+  echo "--- Modified files:"
   sudo -u "$OWNER" git -C "$REPO_DIR" status --short 2>/dev/null || git -C "$REPO_DIR" status --short
 
-  echo "--- Неотслеживаемые файлы (будут удалены):"
+  echo "--- Untracked files (will be deleted):"
   sudo -u "$OWNER" git -C "$REPO_DIR" clean -nfd 2>/dev/null || git -C "$REPO_DIR" clean -nfd
 
-  # Сброс изменённых файлов к состоянию репозитория
+  # Reset modified files to repository state
   sudo -u "$OWNER" git -C "$REPO_DIR" checkout -- . 2>/dev/null \
     || git -C "$REPO_DIR" checkout -- .
 
-  # Удаление неотслеживаемых файлов (кроме явно нужных)
+  # Delete untracked files (except explicitly needed)
   sudo -u "$OWNER" git -C "$REPO_DIR" clean -fd 2>/dev/null \
     || git -C "$REPO_DIR" clean -fd
 
-  log "✓ Очищено: $REPO_DIR"
+  log "✓ Cleaned: $REPO_DIR"
   echo ""
 }
 
-# --- Сначала удаляем явные веб-шеллы из /tmp ---
-log "=== Очистка /tmp и /dev/shm ==="
+# --- First remove explicit webshells from /tmp ---
+log "=== Cleaning /tmp and /dev/shm ==="
 find /tmp -type f \( -name "*.php" -o -name "*.py" -o -name "*.pl" -o -name "*.sh" \) -delete 2>/dev/null
 find /dev/shm -type f -delete 2>/dev/null
-log "✓ /tmp и /dev/shm очищены"
+log "✓ /tmp and /dev/shm cleaned"
 
-# --- Обход всех пользователей ---
+# --- Process all users ---
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
 
   if [ ! -d "$WEB_DIR" ]; then
-    warn "Директория $WEB_DIR не найдена — пропускаем пользователя $user"
+    warn "Directory $WEB_DIR not found — skipping user $user"
     continue
   fi
 
-  log "=== Обрабатываем пользователя: $user ==="
+  log "=== Processing user: $user ==="
 
-  # Ищем git-репозитории (на глубину 4 уровня)
+  # Search for git repositories (up to 4 levels deep)
   while IFS= read -r repo; do
     REPO_DIR=$(dirname "$repo")
     cleanup_git_repo "$REPO_DIR" "$user"
   done < <(find "$WEB_DIR" -maxdepth 4 -name ".git" -type d 2>/dev/null)
 
-  # Дополнительно: ищем в /home/$user/git или /home/$user/repos если есть bare repos
+  # Additionally: search in /home/$user/git or /home/$user/repos if bare repos exist
   for extra in "/home/$user/git" "/home/$user/repos"; do
     if [ -d "$extra" ]; then
       while IFS= read -r repo; do
@@ -95,30 +95,30 @@ for user in "${USERS[@]}"; do
   done
 done
 
-# --- Фиксируем права после очистки ---
-log "=== Восстановление прав доступа ==="
+# --- Fix permissions after cleanup ---
+log "=== Restoring file permissions ==="
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
-    # Директории: 755, файлы: 644, PHP файлы: 644
+    # Directories: 755, files: 644, PHP files: 644
     find "$WEB_DIR" -type d -exec chmod 755 {} \; 2>/dev/null
     find "$WEB_DIR" -type f -exec chmod 644 {} \; 2>/dev/null
-    # PHP файлы не должны быть исполняемыми
+    # PHP files must not be executable
     find "$WEB_DIR" -name "*.php" -exec chmod 644 {} \; 2>/dev/null
-    # Восстанавливаем владельца
+    # Restore ownership
     chown -R "$user:$user" "$WEB_DIR" 2>/dev/null
-    log "✓ Права восстановлены для $user"
+    log "✓ Permissions restored for $user"
   fi
 done
 
-# --- Проверяем .htaccess на инъекции после очистки ---
-log "=== Проверка .htaccess после очистки ==="
+# --- Check .htaccess for injections after cleanup ---
+log "=== Checking .htaccess after cleanup ==="
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
     SUSPICIOUS=$(find "$WEB_DIR" -name ".htaccess" -exec grep -l "php_value\|base64\|eval\|RewriteRule.*http" {} \; 2>/dev/null)
     if [ -n "$SUSPICIOUS" ]; then
-      alert "Подозрительный .htaccess у $user:"
+      alert "Suspicious .htaccess for $user:"
       echo "$SUSPICIOUS"
     fi
   fi
@@ -126,11 +126,11 @@ done
 
 echo ""
 echo "============================================================"
-log "ОЧИСТКА ЗАВЕРШЕНА — $(date)"
+log "CLEANUP COMPLETE — $(date)"
 echo "============================================================"
 echo ""
-warn "СЛЕДУЮЩИЕ ШАГИ:"
-echo "1. Перезапустите PHP-FPM: sudo systemctl restart php*-fpm"
-echo "2. Очистите кэш opcache: curl http://localhost/opcache-reset.php (если настроен)"
-echo "3. Перезапустите nginx: sudo systemctl reload nginx"
-echo "4. Запустите скрипт хардинга: sudo bash 03-hardening.sh"
+warn "NEXT STEPS:"
+echo "1. Restart PHP-FPM: sudo systemctl restart php*-fpm"
+echo "2. Clear opcache: curl http://localhost/opcache-reset.php (if configured)"
+echo "3. Reload nginx: sudo systemctl reload nginx"
+echo "4. Run hardening script: sudo bash 03-hardening.sh"

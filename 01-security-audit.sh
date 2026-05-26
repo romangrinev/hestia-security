@@ -1,49 +1,56 @@
 #!/bin/bash
 # =============================================================================
-# SECURITY AUDIT SCRIPT â€” Ð¾Ð±Ð½Ð°Ñ€ÑƒÐ¶ÐµÐ½Ð¸Ðµ Ð²ÐµÐºÑ‚Ð¾Ñ€Ð° Ð·Ð°Ñ€Ð°Ð¶ÐµÐ½Ð¸Ñ
-# Ð—Ð°Ð¿ÑƒÑÐºÐ°Ñ‚ÑŒ Ð¾Ñ‚ root: sudo bash 01-security-audit.sh 2>&1 | tee audit-report.txt
+# SECURITY AUDIT SCRIPT — infection vector detection
+# Run as root: sudo bash 01-security-audit.sh 2>&1 | tee audit-report.txt
 # =============================================================================
 
-# ÐÐ²Ñ‚Ð¾-Ð¾Ð¿Ñ€ÐµÐ´ÐµÐ»ÐµÐ½Ð¸Ðµ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÐµÐ¹ HestiaCP (Ð¸Ð»Ð¸ Ð·Ð°Ð´Ð°Ð¹Ñ‚Ðµ Ð²Ñ€ÑƒÑ‡Ð½ÑƒÑŽ Ð² /etc/security-audit.env)
-# USERS=("user1" "user2")   # Ñ€Ð°ÑÐºÐ¾Ð¼Ð¼ÐµÐ½Ñ‚Ð¸Ñ€ÑƒÐ¹Ñ‚Ðµ Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð¿ÐµÑ€ÐµÐ¾Ð¿Ñ€ÐµÐ´ÐµÐ»Ð¸Ñ‚ÑŒ
+LOCK_FILE="/var/lock/hestia-security-audit.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another security audit is already running; exiting."
+  exit 0
+fi
+
+# Auto-detect HestiaCP users (or set manually in /etc/security-audit.env)
+# USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then
   if command -v v-list-users &>/dev/null; then
-    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}')
+    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}' | sort -u)
   else
-    mapfile -t USERS < <(ls /home/ | grep -vE '^(admin|lost\+found|ubuntu)$')
+    mapfile -t USERS < <(ls /home/ | grep -vE '^(admin|lost\+found|ubuntu)$' | sort -u)
   fi
 fi
 
 REPORT_DIR="/root/security-audit-$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$REPORT_DIR"
 
-# IP Ñ ÐºÐ¾Ñ‚Ð¾Ñ€Ð¾Ð³Ð¾ Ñ€Ð°Ð·Ñ€ÐµÑˆÑ‘Ð½ SSH (Ð¾Ð¿Ñ€ÐµÐ´ÐµÐ»ÑÐµÐ¼ Ð¸Ð· iptables, Ð¸Ð»Ð¸ Ð·Ð°Ð´Ð°Ð¹Ñ‚Ðµ Ð²Ñ€ÑƒÑ‡Ð½ÑƒÑŽ)
+# IP from which SSH is allowed (detected from iptables, or set manually)
 TRUSTED_SSH_IP=$(iptables -L INPUT -n --line-numbers 2>/dev/null \
   | awk '$3=="ACCEPT" && $5=="tcp" && /dpt:22/' \
   | awk '{print $8}' | grep -v '0.0.0.0' | head -1)
-[ -z "$TRUSTED_SSH_IP" ] && TRUSTED_SSH_IP="67.185.203.213"
+[ -z "$TRUSTED_SSH_IP" ] && TRUSTED_SSH_IP="YOUR.IP.HERE"
 
-# --- RESEND ÐÐÐ¡Ð¢Ð ÐžÐ™ÐšÐ˜ ---
-# Ð—Ð°Ð¼ÐµÐ½Ð¸Ñ‚Ðµ Ð½Ð° Ð²Ð°ÑˆÐ¸ Ð·Ð½Ð°Ñ‡ÐµÐ½Ð¸Ñ Ð¸Ð»Ð¸ Ð²Ñ‹Ð½ÐµÑÐ¸Ñ‚Ðµ Ð² /etc/security-audit.env
-RESEND_API_KEY="re_Ð’ÐÐ¨_API_ÐšÐ›Ð®Ð§"
-RESEND_FROM="security@Ð’ÐÐ¨_Ð”ÐžÐœÐ•Ð.com"
-RESEND_TO="admin@Ð’ÐÐ¨_EMAIL.com"
+# --- RESEND SETTINGS ---
+# Replace with your values or move to /etc/security-audit.env
+RESEND_API_KEY="re_YOUR_API_KEY"
+RESEND_FROM="security@your-domain.com"
+RESEND_TO="admin@your-email.com"
 HOSTNAME="$(hostname -f)"
-ALERT_SUBJECTS=()   # Ð½Ð°ÐºÐ°Ð¿Ð»Ð¸Ð²Ð°ÐµÐ¼ Ñ‚ÐµÐ¼Ñ‹ Ð°Ð»ÐµÑ€Ñ‚Ð¾Ð²
-ALERT_BODIES=()     # Ð½Ð°ÐºÐ°Ð¿Ð»Ð¸Ð²Ð°ÐµÐ¼ Ñ‚ÐµÐ»Ð° Ð°Ð»ÐµÑ€Ñ‚Ð¾Ð²
+ALERT_SUBJECTS=()   # accumulate alert subjects
+ALERT_BODIES=()     # accumulate alert bodies
 
-# Ð—Ð°Ð³Ñ€ÑƒÐ¶Ð°ÐµÐ¼ ÐºÐ¾Ð½Ñ„Ð¸Ð³ Ð¸Ð· Ñ„Ð°Ð¹Ð»Ð° ÐµÑÐ»Ð¸ ÐµÑÑ‚ÑŒ (Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð½Ðµ Ñ…Ñ€Ð°Ð½Ð¸Ñ‚ÑŒ ÐºÐ»ÑŽÑ‡Ð¸ Ð² ÑÐºÑ€Ð¸Ð¿Ñ‚Ðµ)
+# Load config from file if exists (to avoid storing keys in the script)
 [ -f /etc/security-audit.env ] && source /etc/security-audit.env
 
-# ÐžÑ‚Ð¿Ñ€Ð°Ð²ÐºÐ° Ð¿Ð¸ÑÑŒÐ¼Ð° Ñ‡ÐµÑ€ÐµÐ· Resend API
-# $1 â€” Ñ‚ÐµÐ¼Ð°, $2 â€” Ð¿ÑƒÑ‚ÑŒ Ðº Ñ„Ð°Ð¹Ð»Ñƒ Ñ Ñ‚ÐµÐ»Ð¾Ð¼ Ð¿Ð¸ÑÑŒÐ¼Ð° (plain text)
+# Send email via Resend API
+# $1 — subject, $2 — path to email body file (plain text)
 send_resend_email() {
   local SUBJECT="$1"
   local BODY_FILE="$2"
   local TMPJSON
   TMPJSON=$(mktemp /tmp/resend-body-XXXXXX.json)
 
-  # Ð˜ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÐ¼ python3 Ð´Ð»Ñ ÐºÐ¾Ñ€Ñ€ÐµÐºÑ‚Ð½Ð¾Ð³Ð¾ JSON-ÐºÐ¾Ð´Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ñ (Ð¸Ð·Ð±ÐµÐ³Ð°ÐµÐ¼ "Argument list too long")
+  # Use python3 for proper JSON encoding (avoids "Argument list too long")
   python3 - "$SUBJECT" "$RESEND_FROM" "$RESEND_TO" "$BODY_FILE" <<'PYEOF' > "$TMPJSON"
 import json, sys
 subject = sys.argv[1]
@@ -66,13 +73,13 @@ PYEOF
   rm -f "$TMPJSON"
 
   if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-    log "Email Ð¾Ñ‚Ð¿Ñ€Ð°Ð²Ð»ÐµÐ½ Ñ‡ÐµÑ€ÐµÐ· Resend: $SUBJECT"
+    log "Email sent via Resend: $SUBJECT"
   else
-    warn "ÐžÑˆÐ¸Ð±ÐºÐ° Ð¾Ñ‚Ð¿Ñ€Ð°Ð²ÐºÐ¸ email (HTTP $HTTP_CODE): $(cat /tmp/resend-response.json 2>/dev/null)"
+    warn "Email send error (HTTP $HTTP_CODE): $(cat /tmp/resend-response.json 2>/dev/null)"
   fi
 }
 
-# Ð”Ð¾Ð±Ð°Ð²Ð¸Ñ‚ÑŒ Ð°Ð»ÐµÑ€Ñ‚ Ð² Ð¾Ñ‡ÐµÑ€ÐµÐ´ÑŒ (Ð±ÑƒÐ´ÐµÑ‚ Ð¾Ñ‚Ð¿Ñ€Ð°Ð²Ð»ÐµÐ½ Ð¾Ð´Ð½Ð¸Ð¼ Ð¿Ð¸ÑÑŒÐ¼Ð¾Ð¼ Ð² ÐºÐ¾Ð½Ñ†Ðµ)
+# Add alert to queue (will be sent as a single email at the end)
 queue_alert() {
   local label="$1"
   local content="$2"
@@ -91,105 +98,105 @@ warn() { echo -e "${YLW}[!]${NC} $1"; }
 alert() { echo -e "${RED}[ALERT]${NC} $1"; }
 
 echo "============================================================"
-echo " SECURITY AUDIT â€” $(date)"
+echo " SECURITY AUDIT — $(date)"
 echo "============================================================"
 
-# --- 1. Ð¡Ð˜Ð¡Ð¢Ð•ÐœÐÐÐ¯ Ð˜ÐÐ¤ÐžÐ ÐœÐÐ¦Ð˜Ð¯ ---
-log "=== 1. Ð¡Ð˜Ð¡Ð¢Ð•ÐœÐÐÐ¯ Ð˜ÐÐ¤ÐžÐ ÐœÐÐ¦Ð˜Ð¯ ==="
+# --- 1. SYSTEM INFORMATION ---
+log "=== 1. SYSTEM INFORMATION ==="
 echo "OS: $(cat /etc/os-release | grep PRETTY_NAME)"
 echo "Kernel: $(uname -r)"
 echo "Uptime: $(uptime)"
-echo "HestiaCP version: $(cat /usr/local/hestia/conf/hestia.conf 2>/dev/null | grep VERSION || echo 'Ð½Ðµ Ð½Ð°Ð¹Ð´ÐµÐ½Ð¾')"
+echo "HestiaCP version: $(cat /usr/local/hestia/conf/hestia.conf 2>/dev/null | grep VERSION || echo 'not found')"
 
-# --- 2. ÐŸÐžÐ¡Ð›Ð•Ð”ÐÐ˜Ð• Ð’Ð¥ÐžÐ”Ð« ÐÐ Ð¡Ð•Ð Ð’Ð•Ð  ---
-log "=== 2. ÐŸÐžÐ¡Ð›Ð•Ð”ÐÐ˜Ð• Ð’Ð¥ÐžÐ”Ð« SSH (last 50) ==="
+# --- 2. RECENT SERVER LOGINS ---
+log "=== 2. RECENT SSH LOGINS (last 50) ==="
 last -n 50 | tee "$REPORT_DIR/last-logins.txt"
 
-# ÐÐµÑƒÐ´Ð°Ñ‡Ð½Ñ‹Ðµ SSH Ð²Ñ…Ð¾Ð´Ñ‹ â€” Ð¿Ð¾ÐºÐ°Ð·Ñ‹Ð²Ð°ÐµÐ¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ ÑÑ‡Ñ‘Ñ‚Ñ‡Ð¸Ðº (fail2ban Ð·Ð°Ñ‰Ð¸Ñ‰Ð°ÐµÑ‚)
+# Failed SSH logins — show count only (fail2ban protects)
 grep "Failed password" /var/log/auth.log 2>/dev/null \
   | tee "$REPORT_DIR/failed-ssh-logins.txt" > /dev/null
 FAILED_COUNT=$(wc -l < "$REPORT_DIR/failed-ssh-logins.txt")
 if [ "$FAILED_COUNT" -gt 10 ]; then
-  warn "ÐÐµÑƒÐ´Ð°Ñ‡Ð½Ñ‹Ñ… Ð¿Ð¾Ð¿Ñ‹Ñ‚Ð¾Ðº Ð²Ñ…Ð¾Ð´Ð° SSH Ð² auth.log: $FAILED_COUNT (fail2ban Ð°ÐºÑ‚Ð¸Ð²ÐµÐ½)"
+  warn "Failed SSH login attempts in auth.log: $FAILED_COUNT (fail2ban active)"
 else
-  log "âœ“ ÐÐµÑƒÐ´Ð°Ñ‡Ð½Ñ‹Ñ… SSH Ð¿Ð¾Ð¿Ñ‹Ñ‚Ð¾Ðº: $FAILED_COUNT"
+  log "✓ Failed SSH attempts: $FAILED_COUNT"
 fi
 
-# ÐŸÑ€Ð¸Ð½ÑÑ‚Ñ‹Ðµ Ð¿Ð°Ñ€Ð¾Ð»Ð¸ â€” Ð°Ð»ÐµÑ€Ñ‚ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð´Ð»Ñ IP Ð½Ðµ Ð¸Ð· Ð²Ð°Ð¹Ñ‚Ð»Ð¸ÑÑ‚Ð°
+# Accepted passwords — alert only for IPs not in the whitelist
 grep "Accepted password" /var/log/auth.log 2>/dev/null \
   | tee "$REPORT_DIR/accepted-password-logins.txt" > /dev/null
 PASSWD_FROM_UNKNOWN=$(grep "Accepted password" /var/log/auth.log 2>/dev/null \
   | grep -v "$TRUSTED_SSH_IP")
 if [ -n "$PASSWD_FROM_UNKNOWN" ]; then
-  warn "ÐŸÑ€Ð¸Ð½ÑÑ‚Ñ‹Ðµ Ð¿Ð°Ñ€Ð¾Ð»Ð¸ Ñ Ð½ÐµÐ·Ð½Ð°ÐºÐ¾Ð¼Ñ‹Ñ… IP (ÐŸÐžÐ”ÐžÐ—Ð Ð˜Ð¢Ð•Ð›Ð¬ÐÐž):"
+  warn "Accepted passwords from unknown IPs (SUSPICIOUS):"
   echo "$PASSWD_FROM_UNKNOWN" | tee -a "$REPORT_DIR/accepted-password-logins.txt"
-  queue_alert "SSH: Ð¿Ñ€Ð¸Ð½ÑÑ‚Ñ‹Ðµ Ð¿Ð°Ñ€Ð¾Ð»Ð¸ Ñ Ð½ÐµÐ¸Ð·Ð²ÐµÑÑ‚Ð½Ñ‹Ñ… IP" "$PASSWD_FROM_UNKNOWN"
+  queue_alert "SSH: accepted passwords from unknown IPs" "$PASSWD_FROM_UNKNOWN"
 else
-  log "âœ“ ÐŸÑ€Ð¸Ð½ÑÑ‚Ñ‹Ñ… Ð¿Ð°Ñ€Ð¾Ð»ÐµÐ¹ Ñ Ð½ÐµÐ·Ð½Ð°ÐºÐ¾Ð¼Ñ‹Ñ… IP Ð½ÐµÑ‚ (Ñ‚Ð¾Ð»ÑŒÐºÐ¾ $TRUSTED_SSH_IP Ð¸Ð»Ð¸ ÐºÐ»ÑŽÑ‡Ð¸)"
+  log "✓ No accepted passwords from unknown IPs (only $TRUSTED_SSH_IP or keys)"
 fi
 
-# --- 3. ÐÐšÐ¢Ð˜Ð’ÐÐ«Ð• Ð¡Ð•Ð¡Ð¡Ð˜Ð˜ Ð˜ ÐŸÐ ÐžÐ¦Ð•Ð¡Ð¡Ð« ---
-log "=== 3. ÐÐšÐ¢Ð˜Ð’ÐÐ«Ð• Ð¡Ð•Ð¡Ð¡Ð˜Ð˜ ==="
+# --- 3. ACTIVE SESSIONS AND PROCESSES ---
+log "=== 3. ACTIVE SESSIONS ==="
 w
 echo ""
-log "ÐŸÐ¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ Ð¿Ñ€Ð¾Ñ†ÐµÑÑÑ‹ (PHP/Python/Perl/curl/wget Ð¾Ñ‚ Ð²ÐµÐ±-Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÐµÐ¹):"
+log "Suspicious processes (PHP/Python/Perl/curl/wget from web users):"
 ps aux | grep -E "(php|python|perl|wget|curl|nc |ncat|bash -i|sh -i)" \
   | grep -v grep | tee "$REPORT_DIR/suspicious-processes.txt"
 
-# --- 4. Ð¡Ð•Ð¢Ð•Ð’Ð«Ð• Ð¡ÐžÐ•Ð”Ð˜ÐÐ•ÐÐ˜Ð¯ ---
-log "=== 4. ÐÐ•Ð¡Ð¢ÐÐÐ”ÐÐ Ð¢ÐÐ«Ð• Ð¡Ð•Ð¢Ð•Ð’Ð«Ð• Ð¡ÐžÐ•Ð”Ð˜ÐÐ•ÐÐ˜Ð¯ ==="
-echo "Ð¡Ð»ÑƒÑˆÐ°ÑŽÑ‰Ð¸Ðµ Ð¿Ð¾Ñ€Ñ‚Ñ‹:"
+# --- 4. NETWORK CONNECTIONS ---
+log "=== 4. NON-STANDARD NETWORK CONNECTIONS ==="
+echo "Listening ports:"
 ss -tlnp | tee "$REPORT_DIR/listening-ports.txt"
 
 EXT_CONNS=$(ss -tnp | grep ESTAB | grep -vE ':80 |:443 |:22 |:3306 |:8083 ')
 if [ -n "$EXT_CONNS" ]; then
-  warn "ÐÐºÑ‚Ð¸Ð²Ð½Ñ‹Ðµ Ð²Ð½ÐµÑˆÐ½Ð¸Ðµ ÑÐ¾ÐµÐ´Ð¸Ð½ÐµÐ½Ð¸Ñ (Ð½Ðµ 80/443/22/3306):"
+  warn "Active external connections (not 80/443/22/3306):"
   echo "$EXT_CONNS" | tee "$REPORT_DIR/external-connections.txt"
 else
-  log "âœ“ ÐÐµÑÑ‚Ð°Ð½Ð´Ð°Ñ€Ñ‚Ð½Ñ‹Ñ… Ð²Ð½ÐµÑˆÐ½Ð¸Ñ… ÑÐ¾ÐµÐ´Ð¸Ð½ÐµÐ½Ð¸Ð¹ Ð½ÐµÑ‚"
+  log "✓ No non-standard external connections"
 fi
 
-# --- 4b. ÐŸÐ ÐžÐ’Ð•Ð ÐšÐ IPTABLES ---
-log "=== 4b. ÐŸÐ ÐžÐ’Ð•Ð ÐšÐ IPTABLES ==="
+# --- 4b. IPTABLES CHECK ---
+log "=== 4b. IPTABLES CHECK ==="
 IPTABLES_RULES=$(iptables -L INPUT -n --line-numbers 2>/dev/null)
 echo "$IPTABLES_RULES" | tee "$REPORT_DIR/iptables-input.txt"
 
-# ÐŸÑ€Ð¾Ð²ÐµÑ€ÑÐµÐ¼: SSH (Ð¿Ð¾Ñ€Ñ‚ 22) Ð½Ðµ Ð´Ð¾Ð»Ð¶ÐµÐ½ Ð±Ñ‹Ñ‚ÑŒ Ð¾Ñ‚ÐºÑ€Ñ‹Ñ‚ Ð´Ð»Ñ 0.0.0.0/0 ÐºÐ°Ðº SOURCE
-# Ð˜ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÐµÐ¼ awk Ñ‡Ñ‚Ð¾Ð±Ñ‹ Ð¿Ñ€Ð¾Ð²ÐµÑ€Ð¸Ñ‚ÑŒ Ð¸Ð¼ÐµÐ½Ð½Ð¾ ÐºÐ¾Ð»Ð¾Ð½ÐºÑƒ source (5), Ð° Ð½Ðµ destination
+# Check: SSH (port 22) must not be open to 0.0.0.0/0 as SOURCE
+# Use awk to check the source column (5), not destination
 SSH_OPEN=$(iptables -L INPUT -n --line-numbers 2>/dev/null \
   | awk '$2=="ACCEPT" && $5=="0.0.0.0/0"' | grep 'dpt:22')
 if [ -n "$SSH_OPEN" ]; then
-  queue_alert "IPTABLES: SSH Ð¾Ñ‚ÐºÑ€Ñ‹Ñ‚ Ð´Ð»Ñ Ð²ÑÐµÐ³Ð¾ Ð¼Ð¸Ñ€Ð°!" "ÐŸÑ€Ð°Ð²Ð¸Ð»Ð¾ Ñ€Ð°Ð·Ñ€ÐµÑˆÐ°ÐµÑ‚ SSH Ñ 0.0.0.0/0 â€” ÑÐ»ÐµÐ´ÑƒÐµÑ‚ Ð¾Ð³Ñ€Ð°Ð½Ð¸Ñ‡Ð¸Ñ‚ÑŒ Ð¿Ð¾ IP:\n$SSH_OPEN"
+  queue_alert "IPTABLES: SSH open to the world!" "Rule allows SSH from 0.0.0.0/0 — should be restricted by IP:\n$SSH_OPEN"
 else
-  log "âœ“ SSH Ð¾Ð³Ñ€Ð°Ð½Ð¸Ñ‡ÐµÐ½ Ð¿Ð¾ IP (0.0.0.0/0 Ð½Ðµ Ñ€Ð°Ð·Ñ€ÐµÑˆÑ‘Ð½ ÐºÐ°Ðº source)"
+  log "✓ SSH restricted by IP (0.0.0.0/0 not allowed as source)"
 fi
 
-# ÐŸÑ€Ð¾Ð²ÐµÑ€ÑÐµÐ¼: Ð¿Ð¾Ð»Ð¸Ñ‚Ð¸ÐºÐ° INPUT
+# Check: INPUT policy
 INPUT_POLICY=$(echo "$IPTABLES_RULES" | grep 'Chain INPUT' | grep -o 'policy [A-Z]*')
 if echo "$INPUT_POLICY" | grep -q 'DROP\|REJECT'; then
-  log "âœ“ ÐŸÐ¾Ð»Ð¸Ñ‚Ð¸ÐºÐ° INPUT: $INPUT_POLICY (Ð±ÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ð¾)"
+  log "✓ INPUT policy: $INPUT_POLICY (secure)"
 else
-  queue_alert "IPTABLES: Ð¿Ð¾Ð»Ð¸Ñ‚Ð¸ÐºÐ° INPUT=$INPUT_POLICY" "Ð ÐµÐºÐ¾Ð¼ÐµÐ½Ð´ÑƒÐµÑ‚ÑÑ policy DROP. Ð¢ÐµÐºÑƒÑ‰Ð°Ñ Ð¿Ð¾Ð»Ð¸Ñ‚Ð¸ÐºÐ°: $INPUT_POLICY"
+  queue_alert "IPTABLES: INPUT policy=$INPUT_POLICY" "Recommended policy is DROP. Current policy: $INPUT_POLICY"
 fi
 
-# ÐŸÑ€Ð¾Ð²ÐµÑ€ÑÐµÐ¼: MySQL/MariaDB Ð½Ðµ Ð¾Ñ‚ÐºÑ€Ñ‹Ñ‚ Ð½Ð°Ñ€ÑƒÐ¶Ñƒ (source 0.0.0.0/0)
+# Check: MySQL/MariaDB not exposed externally (source 0.0.0.0/0)
 MYSQL_OPEN=$(iptables -L INPUT -n --line-numbers 2>/dev/null \
   | awk '$2=="ACCEPT" && $5=="0.0.0.0/0"' | grep 'dpt:3306')
 if [ -n "$MYSQL_OPEN" ]; then
-  queue_alert "IPTABLES: MySQL Ð¾Ñ‚ÐºÑ€Ñ‹Ñ‚ Ð´Ð»Ñ Ð²ÑÐµÐ³Ð¾ Ð¼Ð¸Ñ€Ð°!" "ÐŸÑ€Ð°Ð²Ð¸Ð»Ð¾ Ñ€Ð°Ð·Ñ€ÐµÑˆÐ°ÐµÑ‚ Ð¿Ð¾Ð´ÐºÐ»ÑŽÑ‡ÐµÐ½Ð¸Ðµ Ðº MySQL Ñ 0.0.0.0/0:\n$MYSQL_OPEN"
+  queue_alert "IPTABLES: MySQL open to the world!" "Rule allows MySQL connections from 0.0.0.0/0:\n$MYSQL_OPEN"
 else
-  log "âœ“ MySQL Ð½Ðµ Ð´Ð¾ÑÑ‚ÑƒÐ¿ÐµÐ½ Ð¸Ð·Ð²Ð½Ðµ"
+  log "✓ MySQL not accessible externally"
 fi
 
-# ÐŸÑ€Ð¾Ð²ÐµÑ€ÑÐµÐ¼: ÐµÑÑ‚ÑŒ Ð»Ð¸ fail2ban Ñ†ÐµÐ¿Ð¾Ñ‡ÐºÐ¸
-if iptables -L f2b-sshd -n &>/dev/null; then
-  log "âœ“ fail2ban Ð°ÐºÑ‚Ð¸Ð²ÐµÐ½ (Ñ†ÐµÐ¿Ð¾Ñ‡ÐºÐ° f2b-sshd Ð½Ð°Ð¹Ð´ÐµÐ½Ð°)"
+# Check: fail2ban is running (supports both iptables and nftables backends)
+if systemctl is-active --quiet fail2ban && fail2ban-client status sshd &>/dev/null; then
+  log "✓ fail2ban active (sshd jail running)"
 else
-  queue_alert "fail2ban Ð½Ðµ Ð°ÐºÑ‚Ð¸Ð²ÐµÐ½" "Ð¦ÐµÐ¿Ð¾Ñ‡ÐºÐ° f2b-sshd Ð½Ðµ Ð½Ð°Ð¹Ð´ÐµÐ½Ð° Ð² iptables â€” Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ fail2ban Ð½Ðµ Ð·Ð°Ð¿ÑƒÑ‰ÐµÐ½"
+  queue_alert "fail2ban not active" "fail2ban service not running or sshd jail missing"
 fi
 
-# --- 5. CRON-Ð—ÐÐ”ÐÐ§Ð˜ Ð’Ð¡Ð•Ð¥ ÐŸÐžÐ›Ð¬Ð—ÐžÐ’ÐÐ¢Ð•Ð›Ð•Ð™ ---
-log "=== 5. CRON-Ð—ÐÐ”ÐÐ§Ð˜ ==="
+# --- 5. CRON JOBS FOR ALL USERS ---
+log "=== 5. CRON JOBS ==="
 echo "System cron:"
 ls -la /etc/cron* 2>/dev/null
 cat /etc/crontab 2>/dev/null
@@ -202,30 +209,30 @@ for user in "${USERS[@]}" root www-data; do
     CRON_REAL=$(echo "$CRON" | grep -v '^\s*#' | grep -v '^\s*$' | \
       grep -v 'MAILTO=' | grep -v 'CONTENT_TYPE=')
     # Skip alert if all real cron entries are safe known-patterns:
-    #   artisan schedule:run  â€” standard Laravel scheduler
-    #   security-audit        â€” our own audit script
-    #   hestiaweb/hestia      â€” HestiaCP system tasks
+    #   artisan schedule:run  — standard Laravel scheduler
+    #   security-audit        — our own audit script
+    #   hestiaweb/hestia      — HestiaCP system tasks
     CRON_SUSPICIOUS=$(echo "$CRON_REAL" | grep -v 'artisan schedule:run' | \
       grep -v 'server-security\|security-audit' | grep -v 'hestia')
     if [ -n "$CRON_SUSPICIOUS" ]; then
-      queue_alert "Cron Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»Ñ $user" "$CRON"
+      queue_alert "Cron job for user $user" "$CRON"
     fi
   fi
 done
 
-echo "Cron Ð² /var/spool/cron:"
+echo "Cron in /var/spool/cron:"
 ls -la /var/spool/cron/crontabs/ 2>/dev/null
 
-# --- 6. ÐŸÐžÐ˜Ð¡Ðš ÐœÐžÐ”Ð˜Ð¤Ð˜Ð¦Ð˜Ð ÐžÐ’ÐÐÐÐ«Ð¥ Ð¤ÐÐ™Ð›ÐžÐ’ (Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ðµ 14 Ð´Ð½ÐµÐ¹) ---
-log "=== 6. Ð¤ÐÐ™Ð›Ð« Ð˜Ð—ÐœÐ•ÐÐÐÐÐ«Ð• Ð—Ð 14 Ð”ÐÐ•Ð™ ==="
-# Ð˜ÑÐºÐ»ÑŽÑ‡Ð°ÐµÐ¼ Ð±ÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ñ‹Ðµ ÑˆÑƒÐ¼Ð½Ñ‹Ðµ Ð¿ÑƒÑ‚Ð¸:
-#   storage/framework/views/  â€” ÑÐºÐ¾Ð¼Ð¿Ð¸Ð»Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð½Ñ‹Ðµ Blade-ÑˆÐ°Ð±Ð»Ð¾Ð½Ñ‹
-#   storage/framework/cache/  â€” Laravel bootstrap ÐºÑÑˆ
-#   document_errors/          â€” ÑÑ‚Ñ€Ð°Ð½Ð¸Ñ†Ñ‹ Ð¾ÑˆÐ¸Ð±Ð¾Ðº HestiaCP (Ð¼ÐµÐ½ÑÑŽÑ‚ÑÑ Ð¿Ñ€Ð¸ hardening)
-#   public/js/filament/       â€” Filament JS Ð°ÑÑÐµÑ‚Ñ‹ (npm build output)
-#   public/css/filament/      â€” Filament CSS Ð°ÑÑÐµÑ‚Ñ‹
-#   public/build/             â€” Vite build output
-#   node_modules/vendor/      â€” Ð·Ð°Ð²Ð¸ÑÐ¸Ð¼Ð¾ÑÑ‚Ð¸
+# --- 6. SEARCH FOR MODIFIED FILES (last 14 days) ---
+log "=== 6. FILES MODIFIED IN THE LAST 14 DAYS ==="
+# Exclude safe noisy paths:
+#   storage/framework/views/  — compiled Blade templates
+#   storage/framework/cache/  — Laravel bootstrap cache
+#   document_errors/          — HestiaCP error pages (change during hardening)
+#   public/js/filament/       — Filament JS assets (npm build output)
+#   public/css/filament/      — Filament CSS assets
+#   public/build/             — Vite build output
+#   node_modules/vendor/      — dependencies
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
@@ -244,63 +251,117 @@ for user in "${USERS[@]}"; do
       -printf "%TY-%Tm-%Td %TH:%TM  %p\n" 2>/dev/null \
       | sort -r | head -50)
     if [ -n "$MODIFIED" ]; then
-      warn "Ð˜Ð·Ð¼ÐµÐ½Ñ‘Ð½Ð½Ñ‹Ðµ PHP/JS Ñ„Ð°Ð¹Ð»Ñ‹ Ñƒ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»Ñ $user:"
+      warn "Modified PHP/JS files for user $user:"
       echo "$MODIFIED" | tee -a "$REPORT_DIR/modified-files-$user.txt"
     fi
   fi
 done
 
-# --- 7. ÐŸÐžÐ˜Ð¡Ðš Ð’Ð•Ð‘-Ð¨Ð•Ð›Ð›ÐžÐ’ Ð˜ Ð‘Ð­ÐšÐ”ÐžÐ ÐžÐ’ ---
-log "=== 7. ÐŸÐžÐ˜Ð¡Ðš Ð’Ð•Ð‘-Ð¨Ð•Ð›Ð›ÐžÐ’ Ð˜ Ð‘Ð­ÐšÐ”ÐžÐ ÐžÐ’ ==="
-# Ð’ÐÐ–ÐÐž: vendor/, node_modules/ Ð¸ÑÐºÐ»ÑŽÑ‡ÐµÐ½Ñ‹ Ð¸Ð· Ð¿Ð¾Ð¸ÑÐºÐ° â€” Ñ‚Ð°Ð¼ Ð»ÐµÐ³Ð¸Ñ‚Ð¸Ð¼Ð½Ñ‹Ð¹ ÐºÐ¾Ð´.
-# Ð˜Ñ‰ÐµÐ¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð² public_html ÐºÐ¾Ñ€Ð½Ðµ, public/, storage/, Ð¸ Ð¿Ñ€Ð¾Ñ‡Ð¸Ñ… Ð½Ðµ-vendor Ð¿ÑƒÑ‚ÑÑ….
+# --- 7. SEARCH FOR WEBSHELLS AND BACKDOORS ---
+log "=== 7. SEARCH FOR WEBSHELLS AND BACKDOORS ==="
+# IMPORTANT: vendor/, node_modules/ excluded from search — legitimate code there.
+# Searching only in public_html root, public/, storage/, and other non-vendor paths.
 
-# ÐŸÐ°Ñ‚Ñ‚ÐµÑ€Ð½Ñ‹ Ð´Ð»Ñ PHP Ñ„Ð°Ð¹Ð»Ð¾Ð² (Ð¸ÑÐºÐ»ÑŽÑ‡Ð°Ñ vendor/ Ð¸ node_modules/)
-PHP_WEBSHELL_PATTERNS=(
+# Patterns for PHP files (excluding vendor/ and node_modules/)
+# Keep these split so we can scan each tree once with fixed strings and once
+# with regexes instead of rescanning the full tree per pattern.
+PHP_WEBSHELL_FIXED_PATTERNS=(
   'eval(base64_decode'
   'eval(gzinflate'
   'eval(str_rot13'
   'eval(gzuncompress'
-  'eval(\$_'
-  'assert(\$_'
-  'system(\$_'
-  'exec(\$_'
-  'passthru(\$_'
-  'shell_exec(\$_'
-  '\$_POST\[.*\].*eval'
-  'base64_decode.*eval'
   'FilesMan'
-  'WSO\b'
   'c99shell'
   'r57shell'
   'phpspy'
-  'preg_replace.*\/e'
-  'create_function.*eval'
-  '@eval('
-  'assert(base64_decode'
-  'gzinflate(base64_decode'
-  'str_rot13(base64_decode'
-  'move_uploaded_file.*\.php'
-  '\$_FILES.*eval'
-  'ReflectionFunction'
-  'pcntl_exec'
+  '/* LP_'
 )
 
-# ÐŸÐ¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ Ð¸Ð¼ÐµÐ½Ð° Ñ„Ð°Ð¹Ð»Ð¾Ð²-ÑˆÐµÐ»Ð»Ð¾Ð² (Ð¸Ñ‰ÐµÐ¼ Ð²ÐµÐ·Ð´Ðµ Ð²ÐºÐ»ÑŽÑ‡Ð°Ñ vendor/)
-# Ð¢Ð¾Ð»ÑŒÐºÐ¾ ÑƒÐ½Ð¸ÐºÐ°Ð»ÑŒÐ½Ñ‹Ðµ Ð¸Ð¼ÐµÐ½Ð°, ÑÐ²Ð½Ð¾ Ð½Ðµ Ð²ÑÑ‚Ñ€ÐµÑ‡Ð°ÑŽÑ‰Ð¸ÐµÑÑ Ð² Ð»ÐµÐ³Ð¸Ñ‚Ð¸Ð¼Ð½Ð¾Ð¼ ÐºÐ¾Ð´Ðµ
+PHP_WEBSHELL_REGEX_PATTERNS=(
+  'eval\(\$_'
+  'assert\(\$_'
+  'system\(\$_'
+  'exec\(\$_'
+  'passthru\(\$_'
+  'shell_exec\(\$_'
+  '\$_POST\[.*\].*eval'
+  'base64_decode.*eval'
+  'WSO\b'
+  'HTTP/1\.0 404.*die\(\)'
+)
+
+# Suspicious shell filenames (search everywhere including vendor/)
+# Only unique names clearly not found in legitimate code
 SHELL_FILENAMES=(
-  # Known webshell names
-  'c99.php' 'r57.php' 'b374k.php' 'wso.php' 'alfa.php' 'alfacgiapi.php'
-  'FilesMan.php' 'indoxploit.php' 'symlink.php' 'cpanel.php'
-  'adminfuns.php' 'wp-conffq.php' 'wp-headre.php' 'shc.php'
-  # Specific shells found in this incident
-  'kozlakola.php' 'b-1.php'
+  'shc.php'
+  'adminfuns.php'
+  'wp-conffq.php'
+  'wp-headre.php'
 )
+SHELL_FILENAME_EXPR=( -name 'shc.php' -o -name 'adminfuns.php' -o -name 'wp-conffq.php' -o -name 'wp-headre.php' )
 
-# ÐšÐ¾Ñ€Ð¾Ñ‚ÐºÐ¸Ðµ Ð¸Ð¼ÐµÐ½Ð° â€” Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹ Ð²Ð½Ðµ vendor/node_modules/storage/framework
-SHELL_FILENAMES_SHORT=(
-  'b.php' 'c.php' 'x.php' 'z.php' 'a.php' 'k.php'
-)
+is_known_safe_php_file() {
+  local file_path="$1"
+
+  case "$file_path" in
+    */wp-content/plugins/insert-headers-and-footers/includes/class-wpcode-snippet-execute.php)
+      return 0
+      ;;
+    */wp-content/uploads/wpforms/cache/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/import/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/export/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/temp/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-import-export-lite/upload/index.php)
+      return 0
+      ;;
+    */wp-content/uploads/alm_templates/default.php)
+      return 0
+      ;;
+    */wp-content/uploads/wp-lister/templates/*/*.php)
+      return 0
+      ;;
+    */wp-content/plugins.bak/*/*.asset.php)
+      return 0
+      ;;
+    */wp-content/plugins.old/*/*.asset.php)
+      return 0
+      ;;
+    */wp-content/plugins.bak/wp-mail-smtp/assets/languages/wp-mail-smtp-vue.php)
+      return 0
+      ;;
+  esac
+
+  if [ "$(basename "$file_path")" = "index.php" ] && grep -q "Silence is golden" "$file_path" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+filter_known_safe_results() {
+  while IFS= read -r file_path; do
+    [ -n "$file_path" ] || continue
+    if ! is_known_safe_php_file "$file_path"; then
+      printf '%s\n' "$file_path"
+    fi
+  done
+}
+
+FIXED_PATTERN_FILE="$REPORT_DIR/php-webshell-fixed-patterns.txt"
+REGEX_PATTERN_FILE="$REPORT_DIR/php-webshell-regex-patterns.txt"
+printf '%s\n' "${PHP_WEBSHELL_FIXED_PATTERNS[@]}" > "$FIXED_PATTERN_FILE"
+printf '%s\n' "${PHP_WEBSHELL_REGEX_PATTERNS[@]}" > "$REGEX_PATTERN_FILE"
 
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
@@ -308,62 +369,58 @@ for user in "${USERS[@]}"; do
   if [ -d "$WEB_DIR" ]; then
     echo "" > "$FOUND_FILE"
 
-    # 1. ÐŸÐ¾Ð¸ÑÐº Ð²Ñ€ÐµÐ´Ð¾Ð½Ð¾ÑÐ½Ñ‹Ñ… Ð¿Ð°Ñ‚Ñ‚ÐµÑ€Ð½Ð¾Ð² Ð² PHP Ñ„Ð°Ð¹Ð»Ð°Ñ…, Ð¸ÑÐºÐ»ÑŽÑ‡Ð°Ñ vendor/ Ð¸ node_modules/
-    for pattern in "${PHP_WEBSHELL_PATTERNS[@]}"; do
-      RESULTS=$(grep -rl \
-        --include='*.php' --include='*.php5' --include='*.php7' --include='*.phtml' --include='*.phar' \
-        --exclude-dir='.git' --exclude-dir='vendor' --exclude-dir='node_modules' \
-        "$pattern" "$WEB_DIR" 2>/dev/null)
-      if [ -n "$RESULTS" ]; then
-        DETAILS=""
-        while IFS= read -r fpath; do
-          FMETA=$(stat -c "  mtime=%y owner=%U size=%s" "$fpath" 2>/dev/null)
-          FPREVIEW=$(grep -m1 "$pattern" "$fpath" 2>/dev/null | head -c 200)
-          DETAILS+="FILE: $fpath\n$FMETA\n  Match: $FPREVIEW\n\n"
-        done <<< "$RESULTS"
-        queue_alert "Ð‘Ð­ÐšÐ”ÐžÐ  Ñƒ $user (Ð¿Ð°Ñ‚Ñ‚ÐµÑ€Ð½: $pattern)" "$DETAILS"
-        echo "$RESULTS" | tee -a "$FOUND_FILE"
-      fi
-    done
+    # 1. Search for malicious patterns in PHP files, excluding vendor/ and node_modules/
+    # Scan each tree once per pattern type to avoid N x pattern full-tree rescans.
+    RESULTS_FIXED=$(grep -rIlF -f "$FIXED_PATTERN_FILE" "$WEB_DIR" \
+      --include='*.php' \
+      --include='*.php5' \
+      --include='*.php7' \
+      --include='*.phtml' \
+      --include='*.phar' \
+      --exclude-dir='.git' \
+      --exclude-dir='vendor' \
+      --exclude-dir='node_modules' 2>/dev/null)
+    RESULTS_REGEX=$(grep -rIlE -f "$REGEX_PATTERN_FILE" "$WEB_DIR" \
+      --include='*.php' \
+      --include='*.php5' \
+      --include='*.php7' \
+      --include='*.phtml' \
+      --include='*.phar' \
+      --exclude-dir='.git' \
+      --exclude-dir='vendor' \
+      --exclude-dir='node_modules' 2>/dev/null)
+    RESULTS=$(printf '%s\n%s\n' "$RESULTS_FIXED" "$RESULTS_REGEX" | sed '/^$/d' | sort -u)
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
+    if [ -n "$RESULTS" ]; then
+      queue_alert "BACKDOOR indicators for $user" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
 
-    # 2. ÐŸÐ¾Ð¸ÑÐº Ð¿Ð¾ Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ð¼ Ð¸Ð¼ÐµÐ½Ð°Ð¼ Ñ„Ð°Ð¹Ð»Ð¾Ð² (Ð²ÐµÐ·Ð´Ðµ)
-    for fname in "${SHELL_FILENAMES[@]}"; do
-      RESULTS=$(find "$WEB_DIR" -name "$fname" 2>/dev/null | grep -v '/.git/')
-      if [ -n "$RESULTS" ]; then
-        queue_alert "ÐŸÐžÐ”ÐžÐ—Ð Ð˜Ð¢Ð•Ð›Ð¬ÐÐ«Ð™ Ð¤ÐÐ™Ð› Ñƒ $user ($fname)" "$RESULTS"
-        echo "$RESULTS" | tee -a "$FOUND_FILE"
-      fi
-    done
+    # 2. Search by suspicious filenames (everywhere)
+    RESULTS=$(find "$WEB_DIR" \( "${SHELL_FILENAME_EXPR[@]}" \) 2>/dev/null | grep -v '/.git/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
+    if [ -n "$RESULTS" ]; then
+      queue_alert "SUSPICIOUS FILE for $user" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
 
-    # 2b. ÐšÐ¾Ñ€Ð¾Ñ‚ÐºÐ¸Ðµ Ð¸Ð¼ÐµÐ½Ð° Ñ„Ð°Ð¹Ð»Ð¾Ð² â€” Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹ Ð²Ð½Ðµ vendor/node_modules/storage/framework
-    for fname in "${SHELL_FILENAMES_SHORT[@]}"; do
-      RESULTS=$(find "$WEB_DIR" -name "$fname" 2>/dev/null \
-        | grep -v '/.git/' \
-        | grep -v '/vendor/' \
-        | grep -v '/node_modules/' \
-        | grep -v '/storage/framework/')
-      if [ -n "$RESULTS" ]; then
-        queue_alert "ÐŸÐžÐ”ÐžÐ—Ð Ð˜Ð¢Ð•Ð›Ð¬ÐÐ«Ð™ Ð¤ÐÐ™Ð› (ÐºÐ¾Ñ€Ð¾Ñ‚ÐºÐ¾Ðµ Ð¸Ð¼Ñ) Ñƒ $user ($fname)" "$RESULTS"
-        echo "$RESULTS" | tee -a "$FOUND_FILE"
-      fi
-    done
-
-    # 3. PHP-Ñ„Ð°Ð¹Ð»Ñ‹ Ñ hex-Ð¸Ð¼ÐµÐ½Ð°Ð¼Ð¸ (8+ hex ÑÐ¸Ð¼Ð²Ð¾Ð»Ð¾Ð²) â€” Ñ…Ð°Ñ€Ð°ÐºÑ‚ÐµÑ€Ð½Ð¾ Ð´Ð»Ñ Ð´Ñ€Ð¾Ð¿Ð¿ÐµÑ€Ð¾Ð²
-    # Ð˜ÑÐºÐ»ÑŽÑ‡Ð°ÐµÐ¼ storage/framework/views/ â€” Ñ‚Ð°Ð¼ Ð»ÐµÐ³Ð¸Ñ‚Ð¸Ð¼Ð½Ñ‹Ðµ ÑÐºÐ¾Ð¼Ð¿Ð¸Ð»Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð½Ñ‹Ðµ Blade-ÑˆÐ°Ð±Ð»Ð¾Ð½Ñ‹ Laravel
+    # 3. PHP files with hex names (8+ hex chars) — typical for droppers
+    # Exclude storage/framework/views/ — legitimate compiled Laravel Blade templates
     RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
       | grep -E '/[0-9a-f]{8,}\.php$' \
       | grep -v '/.git/' \
       | grep -v '/storage/framework/views/' \
       | grep -v '/vendor/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
     if [ -n "$RESULTS" ]; then
-      queue_alert "PHP Ð”Ð ÐžÐŸÐŸÐ•Ð  (hex-Ð¸Ð¼Ñ) Ñƒ $user" "$RESULTS"
+      queue_alert "PHP DROPPER (hex name) for $user" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
     fi
 
-    # 4. cache.php Ð¢ÐžÐ›Ð¬ÐšÐž Ð² Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ñ… Ð¼ÐµÑÑ‚Ð°Ñ… (Ð½Ðµ Ð² /config/, /wp-includes/, /themes/)
-    # Ð›ÐµÐ³Ð¸Ñ‚Ð¸Ð¼Ð½Ñ‹Ðµ Ð¼ÐµÑÑ‚Ð°: /config/cache.php (Laravel), /wp-includes/cache.php (WP core),
-    #   /wp-content/themes/*/cache.php (Ñ‚ÐµÐ¼Ñ‹)
-    # ÐŸÐ¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ: /public/, /storage/, /upload/, /assets/, /build/, /tmp/
+    # 4. cache.php ONLY in suspicious locations (not in /config/, /wp-includes/, /themes/)
+    # Legitimate locations: /config/cache.php (Laravel), /wp-includes/cache.php (WP core),
+    #   /wp-content/themes/*/cache.php (themes)
+    # Suspicious: /public/, /storage/, /upload/, /assets/, /build/, /tmp/
     RESULTS=$(find "$WEB_DIR" -name "cache.php" 2>/dev/null \
       | grep -v '/vendor/' \
       | grep -v '/node_modules/' \
@@ -372,97 +429,335 @@ for user in "${USERS[@]}"; do
       | grep -v '/wp-includes/' \
       | grep -v '/wp-content/themes/' \
       | grep -E '/(public|storage|upload|assets|build|tmp|cache|files)/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
     if [ -n "$RESULTS" ]; then
-      queue_alert "WEBSHELL cache.php Ñƒ $user" "$RESULTS"
+      queue_alert "WEBSHELL cache.php for $user" "$RESULTS"
       echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
+
+    # 5. PHP files in directories that should only contain static assets
+    # These directories should NEVER contain .php files — any found is suspicious
+    # WordPress exclusions: wp-content/plugins/, wp-content/themes/, wp-includes/ legitimately
+    # store PHP files inside images/, files/, assets/ subdirs — these are not webshells.
+    STATIC_DIRS_REGEX='/(images|img|media|uploads|files|assets|pics|photos|pictures)/'
+    RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
+      | grep -E "$STATIC_DIRS_REGEX" \
+      | grep -v '/vendor/' \
+      | grep -v '/node_modules/' \
+      | grep -v '/.git/' \
+      | grep -v '/wp-content/plugins/' \
+      | grep -v '/wp-content/themes/' \
+      | grep -v '/wp-includes/')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
+    if [ -n "$RESULTS" ]; then
+      queue_alert "PHP IN STATIC DIR for $user" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
+
+    # 6. PHP files created in the last 24h inside public/ (excluding index.php and vendor)
+    # Legitimate deploys don't create new .php files in the web-served public/ directory
+    RESULTS=$(find "$WEB_DIR" -type f -name "*.php" -mmin -1440 2>/dev/null \
+      | grep '/public/' \
+      | grep -v '/vendor/' \
+      | grep -v '/node_modules/' \
+      | grep -v '/.git/' \
+      | grep -v '/index\.php$')
+    RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
+    if [ -n "$RESULTS" ]; then
+      queue_alert "NEWLY CREATED PHP IN PUBLIC/ for $user (last 24h)" "$RESULTS"
+      echo "$RESULTS" | tee -a "$FOUND_FILE"
+    fi
+
+    # 7. Backup/config files that should NEVER be publicly accessible
+    # wp-config.php.old, config.php.bak, .env.bak, settings.php.old, etc.
+    # If found in web root, they can leak DB credentials and secret keys
+    BACKUP_FILES=$(find "$WEB_DIR" -maxdepth 4 -type f 2>/dev/null \( \
+      -name "wp-config*.old" -o -name "wp-config*.bak" -o -name "wp-config*.save" \
+      -o -name "config.php.bak" -o -name "config.php.old" \
+      -o -name "settings.php.bak" -o -name "settings.php.old" \
+      -o -name "database.php.bak" -o -name "database.php.old" \
+      -o -name ".env.bak" -o -name ".env.old" -o -name ".env.save" -o -name ".env.backup" \
+      -o -name "*.php.bak" -o -name "*.php.old" -o -name "*.php.save" \
+    \) | grep -v '/.git/' | grep -v '/vendor/')
+    if [ -n "$BACKUP_FILES" ]; then
+      queue_alert "CONFIG BACKUP FILES EXPOSED for $user (may leak credentials!)" "$BACKUP_FILES"
+      echo "$BACKUP_FILES" | tee -a "$FOUND_FILE"
     fi
   fi
 done
 
-# 5. Ð¡Ð¿ÐµÑ†Ð¸Ñ„Ð¸Ñ‡Ð½Ð¾: cron Ñ .X11-linux (Ð¼Ð°Ð¹Ð½ÐµÑ€/Ð±ÑÐºÐ´Ð¾Ñ€)
+# 5. Specific: cron with .X11-linux or base64-encoded payload (miner/backdoor)
 for user in "${USERS[@]}"; do
   CRON_XLINUX=$(crontab -u "$user" -l 2>/dev/null | grep '\.X11-linux')
   if [ -n "$CRON_XLINUX" ]; then
-    queue_alert "ÐœÐÐ™ÐÐ•Ð  Ð’ CRON Ñƒ $user (.X11-linux)" "$CRON_XLINUX"
+    queue_alert "MINER IN CRON for $user (.X11-linux)" "$CRON_XLINUX"
+  fi
+  # Detect base64-encoded payloads in cron (attacker evasion technique)
+  CRON_BASE64=$(crontab -u "$user" -l 2>/dev/null | grep -E 'echo.*base64.*-d|base64 -d|base64 --decode' | grep -v '^#')
+  if [ -n "$CRON_BASE64" ]; then
+    queue_alert "BASE64 PAYLOAD IN CRON for $user (possible miner/backdoor)" "$CRON_BASE64"
   fi
 done
 
-# --- 7b. ÐÐ£Ð›Ð•Ð’ÐÐ¯ Ð¢Ð•Ð ÐŸÐ˜ÐœÐžÐ¡Ð¢Ð¬: PHP Ð’ Ð”Ð˜Ð Ð•ÐšÐ¢ÐžÐ Ð˜Ð¯Ð¥ Ð—ÐÐ“Ð Ð£Ð—ÐšÐ˜ ---
-log "=== 7b. PHP-Ð¤ÐÐ™Ð›Ð« Ð’ Ð”Ð˜Ð Ð•ÐšÐ¢ÐžÐ Ð˜Ð¯Ð¥ Ð—ÐÐ“Ð Ð£Ð—ÐšÐ˜ (Ð½ÑƒÐ»ÐµÐ²Ð°Ñ Ñ‚ÐµÑ€Ð¿Ð¸Ð¼Ð¾ÑÑ‚ÑŒ) ==="
-# ÐŸÐ ÐÐ’Ð˜Ð›Ðž: PHP-Ñ„Ð°Ð¹Ð»Ñ‹ Ð² ÑÑ‚Ð¸Ñ… Ð´Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸ÑÑ… Ð’Ð¡Ð•Ð“Ð”Ð ÑÐ²Ð»ÑÑŽÑ‚ÑÑ Ð²Ñ€ÐµÐ´Ð¾Ð½Ð¾ÑÐ½Ñ‹Ð¼Ð¸.
-# Ð›ÐµÐ³Ð¸Ñ‚Ð¸Ð¼Ð½Ñ‹Ð¹ ÐºÐ¾Ð´ Ð½Ð¸ÐºÐ¾Ð³Ð´Ð° Ð½Ðµ Ñ€Ð°Ð·Ð¼ÐµÑ‰Ð°ÐµÑ‚ .php Ñ„Ð°Ð¹Ð»Ñ‹ Ð² upload-Ð´Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸ÑÑ….
-# ÐŸÑ€Ð¾Ð²ÐµÑ€ÑÐµÐ¼ Ð’Ð¡Ð• Ñ„Ð°Ð¹Ð»Ñ‹ Ð½ÐµÐ·Ð°Ð²Ð¸ÑÐ¸Ð¼Ð¾ Ð¾Ñ‚ Ð´Ð°Ñ‚Ñ‹ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ñ.
-
-UPLOAD_PATH_PATTERNS=(
-  '*/storage/app/public/*'
-  '*/storage/app/livewire-tmp/*'
-  '*/wp-content/uploads/*'
-  '*/wp-content/cache/*'
-  '*/public/storage/*'
-)
-
+# 6. PHP files in storage/app/public/ — webshells via file-upload/Livewire RCE
+# Laravel framework NEVER writes PHP files to storage/app/public/ — any found = webshell
+# Also checks hidden-name files like .cache.php, .bak.php (dot-prefix evasion)
+log "Checking for PHP files in storage/app/public/ (upload RCE webshells)..."
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
-  if [ ! -d "$WEB_DIR" ]; then continue; fi
-
-  UPLOAD_FOUND_FILE="$REPORT_DIR/upload-php-$user.txt"
-  echo "" > "$UPLOAD_FOUND_FILE"
-
-  for path_pattern in "${UPLOAD_PATH_PATTERNS[@]}"; do
-    FOUND=$(find "$WEB_DIR" -type f \
-      \( -name "*.php" -o -name "*.php5" -o -name "*.phtml" -o -name "*.phar" \) \
-      -path "$path_pattern" 2>/dev/null)
-
-    if [ -n "$FOUND" ]; then
-      DETAILS="Pattern: $path_pattern\n"
-      while IFS= read -r fpath; do
-        FMETA=$(stat -c "  mtime=%y owner=%U size=%s" "$fpath" 2>/dev/null)
-        FPREVIEW=$(head -c 300 "$fpath" 2>/dev/null | strings | head -5 | tr '\n' ' ')
-        DETAILS+="FILE: $fpath\n$FMETA\n  Preview: $FPREVIEW\n\n"
-        echo "$fpath" >> "$UPLOAD_FOUND_FILE"
-      done <<< "$FOUND"
-      queue_alert "âš  PHP Ð’ UPLOAD-Ð”Ð˜Ð Ð•ÐšÐ¢ÐžÐ Ð˜Ð˜ Ñƒ $user" "$DETAILS"
+  if [ -d "$WEB_DIR" ]; then
+    STORAGE_PHP=$(find "$WEB_DIR" -path "*/storage/app/public/*" 2>/dev/null \
+      \( -name "*.php" -o -name "*.phtml" -o -name "*.phar" \
+         -o -name ".*.php" -o -name ".*.phtml" -o -name ".*.phar" \) \
+      | grep -v 'framework/views' \
+      | grep -v 'framework/sessions' \
+      | grep -v 'framework/testing')
+    if [ -n "$STORAGE_PHP" ]; then
+      queue_alert "WEBSHELL IN storage/app/public/ for $user (file-upload/Livewire RCE!)" "$STORAGE_PHP"
+      echo "$STORAGE_PHP" | tee -a "$REPORT_DIR/webshells-$user.txt"
+    else
+      log "✓ No PHP in storage/app/public/ for $user"
     fi
-  done
+  fi
 done
-log "âœ“ Ð¡ÐºÐ°Ð½Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ðµ upload-Ð´Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸Ð¹ Ð·Ð°Ð²ÐµÑ€ÑˆÐµÐ½Ð¾"
 
-# --- 8. Ð¤ÐÐ™Ð›Ð« Ð¡ ÐžÐŸÐÐ¡ÐÐ«ÐœÐ˜ ÐŸÐ ÐÐ’ÐÐœÐ˜ ---
-log "=== 8. Ð¤ÐÐ™Ð›Ð« Ð¡ 777/SUID ÐŸÐ ÐÐ’ÐÐœÐ˜ ==="
+# 7. Laravel storage/framework/maintenance.php — goto-obfuscated SEO cloaker hiding spot
+# Legit Laravel writes this file ONLY while `php artisan down` is active. Content is a small
+# (~500B) PHP stub that either renders 503 or `return require __DIR__.'/down';`. Anything
+# bigger or containing obfuscation markers = malware (auto-required by public/index.php
+# BEFORE Laravel bootstrap, so it executes on every request without leaving framework traces).
+# Reference: incident 2026-05-25 grinev.studio — 17KB goto-obfuscated cloaker calling out
+# to 198.204.224.178 (opboot.icu C&C).
+log "Checking Laravel storage/framework/maintenance.php integrity..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    while IFS= read -r mfile; do
+      [ -n "$mfile" ] || continue
+      SIZE=$(stat -c%s "$mfile" 2>/dev/null || echo 0)
+      # Legit Laravel maintenance stub is <2KB. Anything bigger = suspicious.
+      if [ "$SIZE" -gt 2048 ]; then
+        queue_alert "LARAVEL maintenance.php OVERSIZED for $user (likely cloaker, ${SIZE}B)" \
+          "$mfile (size: $SIZE bytes — legit is ~500B)"
+        echo "$mfile size=$SIZE" >> "$REPORT_DIR/webshells-$user.txt"
+      elif [ "$SIZE" -gt 0 ]; then
+        # Even small file: alert if it contains obfuscation markers or network calls
+        if grep -qE 'goto [A-Za-z0-9_]{10,};|curl_init|file_get_contents.*http|fsockopen|eval\(' "$mfile" 2>/dev/null; then
+          queue_alert "LARAVEL maintenance.php WITH SUSPICIOUS CODE for $user" \
+            "$mfile contains obfuscation/network calls — investigate"
+          echo "$mfile (suspicious content)" >> "$REPORT_DIR/webshells-$user.txt"
+        fi
+      fi
+    done < <(find "$WEB_DIR" -path "*/storage/framework/maintenance.php" 2>/dev/null)
+  fi
+done
+
+# 8. Unexpected PHP files in bootstrap/cache/ — Laravel autoloads compiled files from here
+# Legit files: services.php, packages.php, config.php, routes-v7.php, compiled.php,
+#   events.php, container.php (Laravel 11+), plus per-package caches like blade-icons.php,
+#   livewire-components.php, filament-*.php — these are written by package service providers.
+# Suspicious: digit-prefixed names (e.g., 1index.php), names matching index/loader/cache,
+#   or random hex names — staged payloads (incident 2026-05-25 grinev.studio dropped
+#   202KB encrypted backdoor as `1index.php` here).
+log "Checking Laravel bootstrap/cache/ for unexpected PHP files..."
+LARAVEL_CACHE_WHITELIST='^(services|packages|config|routes-v[0-9]+|compiled|events|container|blade-icons|livewire-components|filament-[a-z0-9-]+|[a-z][a-z0-9-]*-components|[a-z][a-z0-9-]*-icons)\.php$'
+LARAVEL_CACHE_SUSPICIOUS_NAME='^([0-9]|.*index|.*loader|.*shell|.*cache\.php$|[0-9a-f]{8,}\.php$)'
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    UNEXPECTED=$(find "$WEB_DIR" -path "*/bootstrap/cache/*.php" 2>/dev/null \
+      | while IFS= read -r f; do
+          bn=$(basename "$f")
+          # Skip if matches whitelist
+          echo "$bn" | grep -qE "$LARAVEL_CACHE_WHITELIST" && continue
+          # Alert if matches suspicious name pattern OR size > 50KB
+          # (legit compiled caches rarely exceed 50KB; cloakers are 200KB+)
+          sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+          if echo "$bn" | grep -qE "$LARAVEL_CACHE_SUSPICIOUS_NAME" || [ "$sz" -gt 51200 ]; then
+            echo "$f (size: $sz)"
+          fi
+        done)
+    if [ -n "$UNEXPECTED" ]; then
+      queue_alert "UNEXPECTED PHP IN bootstrap/cache/ for $user (staged payload?)" "$UNEXPECTED"
+      echo "$UNEXPECTED" >> "$REPORT_DIR/webshells-$user.txt"
+    fi
+  fi
+done
+
+# 9. Goto-obfuscation density — PHP files outside vendor/ with >20 `goto LABEL;` statements
+# Modern legit PHP almost never uses `goto`. Obfuscators (incl. the maintenance.php cloaker)
+# rely heavily on goto with random hex/alphanumeric labels to flatten control flow.
+log "Checking for goto-obfuscated PHP files..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    # Find PHP files outside vendor/node_modules and count `goto <label>;` occurrences
+    GOTO_HITS=$(find "$WEB_DIR" -type f -name "*.php" \
+      ! -path "*/vendor/*" ! -path "*/node_modules/*" ! -path "*/.git/*" \
+      ! -path "*/storage/framework/views/*" 2>/dev/null \
+      | while IFS= read -r f; do
+          n=$(grep -cE 'goto [A-Za-z0-9_]{10,};' "$f" 2>/dev/null || echo 0)
+          [ "$n" -gt 20 ] && echo "$f (goto-count: $n)"
+        done)
+    if [ -n "$GOTO_HITS" ]; then
+      queue_alert "GOTO-OBFUSCATED PHP for $user (likely malware loader)" "$GOTO_HITS"
+      echo "$GOTO_HITS" >> "$REPORT_DIR/webshells-$user.txt"
+    fi
+  fi
+done
+
+# 10. Known-bad IOC: hardcoded malware C&C indicators
+# Add new indicators here as incidents accumulate.
+KNOWN_BAD_IOC='198\.204\.224\.178|opboot\.icu|zs898v13'
+log "Checking for known-bad C&C indicators (IOCs)..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    IOC_HITS=$(grep -rIlE "$KNOWN_BAD_IOC" "$WEB_DIR" \
+      --include='*.php' --include='*.phtml' --include='*.phar' --include='*.inc' \
+      --exclude-dir='.git' --exclude-dir='node_modules' 2>/dev/null)
+    if [ -n "$IOC_HITS" ]; then
+      queue_alert "KNOWN-BAD C&C INDICATOR for $user" "$IOC_HITS"
+      echo "$IOC_HITS" >> "$REPORT_DIR/webshells-$user.txt"
+    fi
+  fi
+done
+
+# --- 8. FILES WITH DANGEROUS PERMISSIONS ---
+log "=== 8. FILES WITH 777/SUID PERMISSIONS ==="
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
     FILES_777=$(find "$WEB_DIR" -perm -0777 -type f 2>/dev/null | head -20)
     DIRS_777=$(find "$WEB_DIR" -perm -0777 -type d 2>/dev/null | head -20)
     if [ -n "$FILES_777" ]; then
-      warn "777 Ñ„Ð°Ð¹Ð»Ñ‹ Ñƒ $user:"
+      warn "777 files for $user:"
       echo "$FILES_777" | tee -a "$REPORT_DIR/perms-$user.txt"
-      queue_alert "777 Ñ„Ð°Ð¹Ð»Ñ‹ Ñƒ $user" "$FILES_777"
+      queue_alert "777 files for $user" "$FILES_777"
     fi
     if [ -n "$DIRS_777" ]; then
-      warn "777 Ð´Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸Ð¸ Ñƒ $user:"
+      warn "777 directories for $user:"
       echo "$DIRS_777" | tee -a "$REPORT_DIR/perms-$user.txt"
-      queue_alert "777 Ð´Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸Ð¸ Ñƒ $user" "$DIRS_777"
+      queue_alert "777 directories for $user" "$DIRS_777"
     fi
   fi
 done
 
-# SUID Ð²Ð¾ Ð²ÑÐµÐ¹ ÑÐ¸ÑÑ‚ÐµÐ¼Ðµ â€” Ð°Ð»ÐµÑ€Ñ‚Ð¸Ð¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð½Ð° Ð½ÐµÑÑ‚Ð°Ð½Ð´Ð°Ñ€Ñ‚Ð½Ñ‹Ðµ Ñ„Ð°Ð¹Ð»Ñ‹
-# Ð¡Ñ‚Ð°Ð½Ð´Ð°Ñ€Ñ‚Ð½Ñ‹Ðµ ÑÐ¸ÑÑ‚ÐµÐ¼Ð½Ñ‹Ðµ SUID Ð¿ÑƒÑ‚Ð¸ Ð¸ÑÐºÐ»ÑŽÑ‡Ð°ÐµÐ¼
+# SUID system-wide — alert only on non-standard files
+# Standard system SUID paths are excluded
 SUID_STANDARD='/usr/bin|/usr/sbin|/bin|/sbin|/usr/lib/openssh|/usr/lib/dbus|/usr/libexec/polkit|/usr/lib/mysql/plugin/auth_pam'
+# Known legitimate SUID files outside standard paths (whitelist)
+SUID_WHITELIST=(
+  /usr/lib/policykit-1/polkit-agent-helper-1  # PolicyKit auth agent
+  /usr/lib/eject/dmcrypt-get-device            # eject package
+  /usr/lib/snapd/snap-confine                  # snap sandbox
+)
+# Exclude /root/forensics/ — stores seized malware files (SUID bit intentionally removed)
 SUID_SUSPICIOUS=$(find / -perm /4000 -type f 2>/dev/null \
-  | grep -vE "$SUID_STANDARD")
+  | grep -vE "$SUID_STANDARD" \
+  | grep -v '/root/forensics/' \
+  | grep -vF "$(printf '%s\n' "${SUID_WHITELIST[@]}")")
 find / -perm /4000 -type f 2>/dev/null > "$REPORT_DIR/suid-files.txt"
 if [ -n "$SUID_SUSPICIOUS" ]; then
-  warn "ÐÐ•Ð¡Ð¢ÐÐÐ”ÐÐ Ð¢ÐÐ«Ð• SUID Ñ„Ð°Ð¹Ð»Ñ‹ (Ñ‚Ñ€ÐµÐ±ÑƒÑŽÑ‚ Ð¿Ñ€Ð¾Ð²ÐµÑ€ÐºÐ¸):"
+  warn "NON-STANDARD SUID files (require review):"
   echo "$SUID_SUSPICIOUS" | tee -a "$REPORT_DIR/suid-files.txt"
-  queue_alert "ÐÐµÑÑ‚Ð°Ð½Ð´Ð°Ñ€Ñ‚Ð½Ñ‹Ðµ SUID Ñ„Ð°Ð¹Ð»Ñ‹" "$SUID_SUSPICIOUS"
+  queue_alert "Non-standard SUID files" "$SUID_SUSPICIOUS"
 else
-  log "âœ“ SUID Ñ„Ð°Ð¹Ð»Ñ‹ â€” Ñ‚Ð¾Ð»ÑŒÐºÐ¾ ÑÑ‚Ð°Ð½Ð´Ð°Ñ€Ñ‚Ð½Ñ‹Ðµ ÑÐ¸ÑÑ‚ÐµÐ¼Ð½Ñ‹Ðµ"
+  log "✓ SUID files — standard system only"
 fi
 
-# --- 9. Ð›ÐžÐ“Ð˜ WEB-Ð¡Ð•Ð Ð’Ð•Ð Ð â€” Ð¸Ñ‰ÐµÐ¼ Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ Ð·Ð°Ð¿Ñ€Ð¾ÑÑ‹ ---
-log "=== 9. ÐŸÐžÐ”ÐžÐ—Ð Ð˜Ð¢Ð•Ð›Ð¬ÐÐ«Ð• Ð—ÐÐŸÐ ÐžÐ¡Ð« Ð’ NGINX/APACHE Ð›ÐžÐ“ÐÐ¥ ==="
+# --- 8b. INTEGRITY OF CRITICAL SYSTEM BINARIES ---
+log "=== 8b. CRITICAL BINARY INTEGRITY ==="
+# Check key SUID binaries for signs of replacement.
+# Backdoor indicators (as seen in /usr/bin/su, replaced in May 2026):
+#   - statically linked (real Ubuntu binaries are dynamically linked)
+#   - "no section header" in file(1) output
+#   - file absent from dpkg database (dpkg -S cannot find it)
+CRITICAL_BINS=(
+  /bin/su
+  /usr/bin/su
+  /usr/bin/sudo
+  /usr/bin/passwd
+  /usr/bin/newgrp
+  /usr/bin/gpasswd
+)
+BINARY_REPORT="$REPORT_DIR/binary-integrity.txt"
+BINARY_ALERTS=()
+CHECKED_INODES=()
+
+for bin in "${CRITICAL_BINS[@]}"; do
+  [ -f "$bin" ] || continue
+  # Skip if this inode was already checked (usr-merge deduplication)
+  BIN_INODE=$(stat -c '%i' "$bin" 2>/dev/null)
+  if [[ " ${CHECKED_INODES[*]} " == *" $BIN_INODE "* ]]; then continue; fi
+  CHECKED_INODES+=("$BIN_INODE")
+  FILE_OUT=$(file "$bin" 2>/dev/null)
+
+  # Indicator 1: statically linked — atypical for Ubuntu system binaries
+  if echo "$FILE_OUT" | grep -q "statically linked"; then
+    msg="STATICALLY LINKED (suspicious): $bin — $FILE_OUT"
+    warn "$msg"
+    echo "$msg" >> "$BINARY_REPORT"
+    BINARY_ALERTS+=("$msg")
+  fi
+
+  # Indicator 2: no ELF sections ("no section header") — typical for packed/trojanized binaries
+  if echo "$FILE_OUT" | grep -q "no section header"; then
+    msg="NO ELF SECTIONS (backdoor indicator): $bin — $FILE_OUT"
+    warn "$msg"
+    echo "$msg" >> "$BINARY_REPORT"
+    BINARY_ALERTS+=("$msg")
+  fi
+
+  # Indicator 3: file absent from dpkg database
+  # Ubuntu 20.04+ usr-merge: /bin → /usr/bin symlink, so dpkg may register
+  # the binary under either path. Try both, then fall back to inode match.
+  DPKG_PATH="$bin"
+  PKG=$(dpkg -S "$bin" 2>/dev/null | cut -d: -f1)
+  if [ -z "$PKG" ]; then
+    ALT_BIN=$(echo "$bin" | sed 's|^/usr/bin/|/bin/|; s|^/usr/sbin/|/sbin/|; s|^/bin/|/usr/bin/|; s|^/sbin/|/usr/sbin/|')
+    PKG=$(dpkg -S "$ALT_BIN" 2>/dev/null | cut -d: -f1)
+    [ -n "$PKG" ] && DPKG_PATH="$ALT_BIN"
+  fi
+  if [ -z "$PKG" ]; then
+    msg="NOT REGISTERED IN DPKG (file removed from package database): $bin"
+    warn "$msg"
+    echo "$msg" >> "$BINARY_REPORT"
+    BINARY_ALERTS+=("$msg")
+  else
+    # Indicator 4: dpkg --verify reports checksum mismatch
+    # Use the path dpkg actually knows about (DPKG_PATH, not $bin)
+    VERIFY_OUT=$(dpkg --verify "$PKG" 2>/dev/null | grep -F "$DPKG_PATH")
+    if [ -n "$VERIFY_OUT" ]; then
+      msg="DPKG CHECKSUM MISMATCH: $bin — $VERIFY_OUT"
+      warn "$msg"
+      echo "$msg" >> "$BINARY_REPORT"
+      BINARY_ALERTS+=("$msg")
+    fi
+  fi
+done
+
+# Also check all SUID binaries in standard paths for static linking
+STATIC_SUID=$(find /usr/bin /usr/sbin /bin /sbin -perm /4000 -type f 2>/dev/null \
+  | while read -r f; do
+      file "$f" 2>/dev/null | grep -q "statically linked" && echo "$f"
+    done)
+if [ -n "$STATIC_SUID" ]; then
+  msg="SUID binaries with static linking (check manually):\n$STATIC_SUID"
+  warn "$msg"
+  echo -e "$msg" >> "$BINARY_REPORT"
+  BINARY_ALERTS+=("$msg")
+fi
+
+if [ "${#BINARY_ALERTS[@]}" -gt 0 ]; then
+  queue_alert "BINARY INTEGRITY: suspicious files detected" \
+    "$(printf '%s\n' "${BINARY_ALERTS[@]}")"
+else
+  log "✓ Critical binaries — dynamically linked, present in dpkg"
+fi
+
+# --- 9. WEB SERVER LOGS — search for suspicious requests ---
+log "=== 9. SUSPICIOUS REQUESTS IN NGINX/APACHE LOGS ==="
 SUSPICIOUS_PATTERNS="(eval|base64_decode|system\(|passthru|shell_exec|union.*select|\.\.\/|etc\/passwd|cmd=|exec=|wget |curl |chmod |/tmp/|/dev/shm)"
 
 for user in "${USERS[@]}"; do
@@ -471,127 +766,200 @@ for user in "${USERS[@]}"; do
       HITS=$(grep -iE "$SUSPICIOUS_PATTERNS" "$logfile" 2>/dev/null | wc -l)
       if [ "$HITS" -gt 0 ]; then
         HITS_SAMPLE=$(grep -iE "$SUSPICIOUS_PATTERNS" "$logfile" 2>/dev/null | tail -20)
-        queue_alert "ÐŸÐ¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ Ð·Ð°Ð¿Ñ€Ð¾ÑÑ‹ Ð² $logfile ($HITS ÑˆÑ‚ÑƒÐº)" "$HITS_SAMPLE"
+        queue_alert "Suspicious requests in $logfile ($HITS total)" "$HITS_SAMPLE"
         echo "$HITS_SAMPLE" | tee -a "$REPORT_DIR/suspicious-requests-$user.txt"
       fi
     fi
   done
 done
 
-# --- 10. PHP ÐšÐžÐÐ¤Ð˜Ð“Ð£Ð ÐÐ¦Ð˜Ð¯ ---
-log "=== 10. PHP ÐšÐžÐÐ¤Ð˜Ð“Ð£Ð ÐÐ¦Ð˜Ð¯ ==="
+# --- 9b. ACTIVE OUTBOUND CONNECTIONS FROM PHP-FPM ---
+# PHP-FPM workers should not be initiating outbound TCP connections except to local
+# services (DB, redis, etc.). Outbound to public IPs strongly indicates a cloaker or
+# C&C beacon. Skips RFC1918, loopback and link-local destinations.
+log "=== 9b. PHP-FPM OUTBOUND CONNECTIONS ==="
+if command -v ss >/dev/null 2>&1; then
+  PHP_OUT=$(ss -tnpH state established 2>/dev/null \
+    | grep -E 'php-fpm|"php"' \
+    | awk '{print $4" -> "$5}' \
+    | grep -vE '-> (127\.|::1|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|\[::1\]|\[fe80)')
+  if [ -n "$PHP_OUT" ]; then
+    queue_alert "PHP-FPM OUTBOUND TO PUBLIC IP (possible C&C beacon)" "$PHP_OUT"
+    echo "$PHP_OUT" | tee "$REPORT_DIR/php-fpm-outbound.txt"
+  else
+    log "✓ No PHP-FPM outbound to public IPs"
+  fi
+fi
+
+# --- 10. PHP CONFIGURATION ---
+log "=== 10. PHP CONFIGURATION ==="
 php -i 2>/dev/null | grep -E "(disable_functions|open_basedir|allow_url_fopen|allow_url_include|expose_php|upload_tmp_dir)" \
   | tee "$REPORT_DIR/php-config.txt"
 
-# ÐŸÑ€Ð¾Ð²ÐµÑ€ÐºÐ° PHP-FPM Ð¿ÑƒÐ»Ð¾Ð² â€” Ð°Ð»ÐµÑ€Ñ‚Ð¸Ð¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð½Ð° Ð¿ÑƒÐ»Ñ‹ Ð‘Ð•Ð— open_basedir
+# Check PHP-FPM pools — alert only on pools WITHOUT open_basedir
 POOLS_NO_BASEDIR=$(grep -rL "open_basedir" /etc/php/*/fpm/pool.d/*.conf 2>/dev/null \
-  | grep -v dummy.conf | grep -v '/www.conf')  # www.conf â€” HestiaCP internal (hestiamail)
+  | grep -v dummy.conf | grep -v '/www.conf')  # www.conf — HestiaCP internal (hestiamail)
 if [ -n "$POOLS_NO_BASEDIR" ]; then
-  warn "PHP-FPM Ð¿ÑƒÐ»Ñ‹ Ð‘Ð•Ð— open_basedir (Ñ€Ð¸ÑÐº Ð²Ñ‹Ñ…Ð¾Ð´Ð° Ð·Ð° Ð¿Ñ€ÐµÐ´ÐµÐ»Ñ‹ Ð´Ð¾Ð¼Ð°ÑˆÐ½ÐµÐ¹ Ð´Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸Ð¸):"
+  warn "PHP-FPM pools WITHOUT open_basedir (risk of escaping home directory):"
   echo "$POOLS_NO_BASEDIR" | tee -a "$REPORT_DIR/php-fpm-pools.txt"
-  queue_alert "PHP-FPM Ð¿ÑƒÐ»Ñ‹ Ð±ÐµÐ· open_basedir" "$POOLS_NO_BASEDIR"
+  queue_alert "PHP-FPM pools without open_basedir" "$POOLS_NO_BASEDIR"
 else
-  log "âœ“ Ð’ÑÐµ PHP-FPM Ð¿ÑƒÐ»Ñ‹ Ð¸Ð¼ÐµÑŽÑ‚ open_basedir"
+  log "✓ All PHP-FPM pools have open_basedir"
 fi
 
-# --- 11. ÐŸÐ ÐžÐ’Ð•Ð ÐšÐ .htaccess Ð˜ .user.ini ÐÐ Ð˜ÐÐªÐ•ÐšÐ¦Ð˜Ð˜ ---
-log "=== 11. ÐŸÐ ÐžÐ’Ð•Ð ÐšÐ .htaccess Ð˜ .user.ini ==="
-# Ð˜Ñ‰ÐµÐ¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ Ð¿Ð°Ñ‚Ñ‚ÐµÑ€Ð½Ñ‹, Ð° Ð½Ðµ Ð´Ð°Ð¼Ð¿Ð¸Ð¼ Ð²ÐµÑÑŒ ÐºÐ¾Ð½Ñ‚ÐµÐ½Ñ‚
+# --- 11. CHECK .htaccess AND .user.ini FOR INJECTIONS ---
+log "=== 11. CHECK .htaccess AND .user.ini ==="
+# Search only for suspicious patterns, not dumping all content
 HTACCESS_BAD_PATTERNS='php_value auto_prepend|SetHandler.*cgi|AddHandler.*php|RewriteRule.*eval|base64_decode|system\(|shell_exec'
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   if [ -d "$WEB_DIR" ]; then
-    # Ð¡Ð¾Ñ…Ñ€Ð°Ð½ÑÐµÐ¼ Ð²ÑÐµ htaccess Ð² Ð¾Ñ‚Ñ‡Ñ‘Ñ‚ Ñ‚Ð¸Ñ…Ð¾
-    find "$WEB_DIR" -name ".htaccess" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null \
-      >> "$REPORT_DIR/htaccess-$user.txt"
-    # ÐÐ»ÐµÑ€Ñ‚Ð¸Ð¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð½Ð° Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ Ð¿Ð°Ñ‚Ñ‚ÐµÑ€Ð½Ñ‹
-    HTACCESS_SUSPICIOUS=$(grep -rniE "$HTACCESS_BAD_PATTERNS" \
-      $(find "$WEB_DIR" -name ".htaccess" 2>/dev/null) 2>/dev/null)
-    if [ -n "$HTACCESS_SUSPICIOUS" ]; then
-      warn "ÐŸÐ¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ .htaccess Ñƒ $user:"
-      echo "$HTACCESS_SUSPICIOUS" | tee -a "$REPORT_DIR/htaccess-$user.txt"
-      queue_alert ".htaccess Ð¸Ð½ÑŠÐµÐºÑ†Ð¸Ñ Ñƒ $user" "$HTACCESS_SUSPICIOUS"
+    mapfile -t HTACCESS_FILES < <(find "$WEB_DIR" -name ".htaccess" ! -path "*/vendor/*" ! -path "*/node_modules/*" 2>/dev/null)
+    # Save all htaccess to report silently
+    if [ "${#HTACCESS_FILES[@]}" -gt 0 ]; then
+      printf '%s\0' "${HTACCESS_FILES[@]}" | xargs -0 -I{} sh -c 'echo "=== {} ==="; cat "{}"' 2>/dev/null \
+        >> "$REPORT_DIR/htaccess-$user.txt"
     fi
-    # .user.ini â€” ÑÐ¾Ñ…Ñ€Ð°Ð½ÑÐµÐ¼ Ñ‚Ð¸Ñ…Ð¾, Ð°Ð»ÐµÑ€Ñ‚Ð¸Ð¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð½Ð° Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ Ð·Ð°Ð¿Ð¸ÑÐ¸
-    find "$WEB_DIR" -name ".user.ini" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null \
-      >> "$REPORT_DIR/user-ini-$user.txt"
-    USERINI_SUSPICIOUS=$(grep -rniE "auto_prepend_file|auto_append_file|open_basedir\s*=\s*none" \
-      $(find "$WEB_DIR" -name ".user.ini" 2>/dev/null) 2>/dev/null)
+    # Alert only on suspicious patterns
+    HTACCESS_SUSPICIOUS=""
+    if [ "${#HTACCESS_FILES[@]}" -gt 0 ]; then
+      HTACCESS_SUSPICIOUS=$(printf '%s\0' "${HTACCESS_FILES[@]}" | xargs -0 grep -nHiE "$HTACCESS_BAD_PATTERNS" 2>/dev/null)
+    fi
+    if [ -n "$HTACCESS_SUSPICIOUS" ]; then
+      warn "Suspicious .htaccess for $user:"
+      echo "$HTACCESS_SUSPICIOUS" | tee -a "$REPORT_DIR/htaccess-$user.txt"
+      queue_alert ".htaccess injection for $user" "$HTACCESS_SUSPICIOUS"
+    fi
+    # .user.ini — save silently, alert only on suspicious entries
+    mapfile -t USERINI_FILES < <(find "$WEB_DIR" -name ".user.ini" ! -path "*/vendor/*" ! -path "*/node_modules/*" 2>/dev/null)
+    if [ "${#USERINI_FILES[@]}" -gt 0 ]; then
+      printf '%s\0' "${USERINI_FILES[@]}" | xargs -0 -I{} sh -c 'echo "=== {} ==="; cat "{}"' 2>/dev/null \
+        >> "$REPORT_DIR/user-ini-$user.txt"
+    fi
+    USERINI_SUSPICIOUS=""
+    if [ "${#USERINI_FILES[@]}" -gt 0 ]; then
+      USERINI_SUSPICIOUS=$(printf '%s\0' "${USERINI_FILES[@]}" | xargs -0 grep -nHiE "auto_prepend_file\s*=\s*[^[:space:]]+|auto_append_file\s*=\s*[^[:space:]]+|open_basedir\s*=\s*none" 2>/dev/null)
+    fi
     if [ -n "$USERINI_SUSPICIOUS" ]; then
-      warn "ÐŸÐ¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ðµ .user.ini Ñƒ $user:"
+      warn "Suspicious .user.ini for $user:"
       echo "$USERINI_SUSPICIOUS" | tee -a "$REPORT_DIR/user-ini-$user.txt"
-      queue_alert ".user.ini Ð¸Ð½ÑŠÐµÐºÑ†Ð¸Ñ Ñƒ $user" "$USERINI_SUSPICIOUS"
+      queue_alert ".user.ini injection for $user" "$USERINI_SUSPICIOUS"
     fi
   fi
 done
 
-# --- 12. ÐŸÐ ÐžÐ’Ð•Ð ÐšÐ /tmp Ð˜ /dev/shm ÐÐ ÐŸÐžÐ”ÐžÐ—Ð Ð˜Ð¢Ð•Ð›Ð¬ÐÐ«Ð• Ð¤ÐÐ™Ð›Ð« ---
-log "=== 12. /tmp Ð˜ /dev/shm ==="
-# Ð¡Ð¾Ñ…Ñ€Ð°Ð½ÑÐµÐ¼ Ð»Ð¸ÑÑ‚Ð¸Ð½Ð³ Ð² Ð¾Ñ‚Ñ‡Ñ‘Ñ‚ Ñ‚Ð¸Ñ…Ð¾
+# --- 12. CHECK /tmp AND /dev/shm FOR SUSPICIOUS FILES ---
+log "=== 12. /tmp AND /dev/shm ==="
+# Save listing to report silently
 ls -la /tmp/ > "$REPORT_DIR/tmp-files.txt" 2>/dev/null
 ls -la /dev/shm/ >> "$REPORT_DIR/tmp-files.txt" 2>/dev/null
-# ÐÐ»ÐµÑ€Ñ‚Ð¸Ð¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð½Ð° Ð¸ÑÐ¿Ð¾Ð»Ð½ÑÐµÐ¼Ñ‹Ðµ Ñ„Ð°Ð¹Ð»Ñ‹ â€” Ñ€ÐµÐ°Ð»ÑŒÐ½Ð°Ñ ÑƒÐ³Ñ€Ð¾Ð·Ð°
+# Alert only on executable files — real threat
 TMP_EXEC=$(find /tmp /dev/shm -type f -executable 2>/dev/null)
 if [ -n "$TMP_EXEC" ]; then
-  warn "Ð˜ÑÐ¿Ð¾Ð»Ð½ÑÐµÐ¼Ñ‹Ðµ Ñ„Ð°Ð¹Ð»Ñ‹ Ð² /tmp Ð¸Ð»Ð¸ /dev/shm:"
+  warn "Executable files in /tmp or /dev/shm:"
   echo "$TMP_EXEC" | tee "$REPORT_DIR/tmp-executables.txt"
-  queue_alert "Ð˜ÑÐ¿Ð¾Ð»Ð½ÑÐµÐ¼Ñ‹Ðµ Ñ„Ð°Ð¹Ð»Ñ‹ Ð² /tmp" "$TMP_EXEC"
+  queue_alert "Executable files in /tmp" "$TMP_EXEC"
 else
-  log "âœ“ ÐÐµÑ‚ Ð¸ÑÐ¿Ð¾Ð»Ð½ÑÐµÐ¼Ñ‹Ñ… Ñ„Ð°Ð¹Ð»Ð¾Ð² Ð² /tmp Ð¸ /dev/shm"
+  log "✓ No executable files in /tmp and /dev/shm"
 fi
 
-# --- 13. SSH ÐšÐ›Ð®Ð§Ð˜ Ð’Ð¡Ð•Ð¥ ÐŸÐžÐ›Ð¬Ð—ÐžÐ’ÐÐ¢Ð•Ð›Ð•Ð™ ---
-log "=== 13. SSH ÐšÐ›Ð®Ð§Ð˜ ==="
+# Miner/backdoor detection: hidden executables in user home directories
+# Miners commonly hide in ~/.config/htop/, ~/.cache/, ~/.local/bin/ etc.
+log "Checking for hidden executables in user home directories (miner/backdoor)..."
+HIDDEN_EXEC=$(find /home -type f -executable \
+  \( -path "*/.config/*" -o -path "*/.cache/*" -o -path "*/.local/bin/*" \) \
+  2>/dev/null \
+  | grep -v '/.config/systemd/' \
+  | grep -v '/.config/dbus' \
+  | grep -v 'gvfs-metadata' \
+  | grep -v '/pulse/' \
+  | grep -v '/.cache/composer/vcs/.*/hooks/.*\.sample$' \
+  | head -30)
+if [ -n "$HIDDEN_EXEC" ]; then
+  warn "SUSPICIOUS EXECUTABLES IN HIDDEN HOME DIRS:"
+  echo "$HIDDEN_EXEC" | tee "$REPORT_DIR/hidden-executables.txt"
+  queue_alert "Miner/backdoor: hidden executables in home dirs" "$HIDDEN_EXEC"
+else
+  log "✓ No suspicious hidden executables in home directories"
+fi
+
+# --- 13. SSH KEYS FOR ALL USERS ---
+# Alert only when keys actually change (hash-based baseline), not just by mtime.
+# To accept current keys as baseline: rm /var/lib/security-audit/ssh-key-baseline.sha256
+log "=== 13. SSH KEYS ==="
+SSH_BASELINE_DIR="/var/lib/security-audit"
+SSH_BASELINE_FILE="$SSH_BASELINE_DIR/ssh-key-baseline.sha256"
+mkdir -p "$SSH_BASELINE_DIR"
+# Build current hash of all authorized_keys files
+CURRENT_SSH_HASH=$(for user in "${USERS[@]}" root; do
+  HOME_DIR=$(eval echo "~$user")
+  AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
+  [ -f "$AUTH_KEYS" ] && echo "$user" && cat "$AUTH_KEYS"
+done | sha256sum | awk '{print $1}')
+
 for user in "${USERS[@]}" root; do
   HOME_DIR=$(eval echo "~$user")
   AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
   if [ -f "$AUTH_KEYS" ]; then
-    # Ð¡Ð¾Ñ…Ñ€Ð°Ð½ÑÐµÐ¼ Ð²ÑÐµ ÐºÐ»ÑŽÑ‡Ð¸ Ð² Ð¾Ñ‚Ñ‡Ñ‘Ñ‚ Ñ‚Ð¸Ñ…Ð¾
     echo "=== $user ==" >> "$REPORT_DIR/ssh-keys.txt"
     cat "$AUTH_KEYS" >> "$REPORT_DIR/ssh-keys.txt"
-    # ÐÐ»ÐµÑ€Ñ‚Ð¸Ð¼ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ ÐµÑÐ»Ð¸ Ñ„Ð°Ð¹Ð» ÐºÐ»ÑŽÑ‡ÐµÐ¹ Ð¸Ð·Ð¼ÐµÐ½Ð¸Ð»ÑÑ Ð½ÐµÐ´Ð°Ð²Ð½Ð¾ (Ð·Ð° 7 Ð´Ð½ÐµÐ¹)
-    if find "$AUTH_KEYS" -mtime -7 2>/dev/null | grep -q .; then
-      KEYS_CONTENT=$(cat "$AUTH_KEYS")
-      warn "ÐÐµÐ´Ð°Ð²Ð½Ð¾ Ð¸Ð·Ð¼ÐµÐ½Ñ‘Ð½Ð½Ñ‹Ðµ SSH ÐºÐ»ÑŽÑ‡Ð¸ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»Ñ $user:"
-      echo "$KEYS_CONTENT"
-      queue_alert "Ð˜Ð·Ð¼ÐµÐ½ÐµÐ½Ñ‹ SSH ÐºÐ»ÑŽÑ‡Ð¸ Ñƒ $user" "$KEYS_CONTENT"
-    fi
   fi
 done
-KEY_COUNT=$(grep -c 'ssh-' "$REPORT_DIR/ssh-keys.txt" 2>/dev/null || echo 0)
-log "SSH ÐºÐ»ÑŽÑ‡Ð¸ ÑÐ¾Ñ…Ñ€Ð°Ð½ÐµÐ½Ñ‹ Ð² Ð¾Ñ‚Ñ‡Ñ‘Ñ‚ ($KEY_COUNT ÐºÐ»ÑŽÑ‡ÐµÐ¹ Ð²ÑÐµÐ³Ð¾)"
 
-# --- 14. Ð˜Ð—ÐœÐ•ÐÐ•ÐÐ˜Ð¯ Ð’ /etc ---
-log "=== 14. ÐÐ•Ð”ÐÐ’ÐÐž Ð˜Ð—ÐœÐ•ÐÐÐÐÐ«Ð• Ð¡Ð˜Ð¡Ð¢Ð•ÐœÐÐ«Ð• Ð¤ÐÐ™Ð›Ð« ==="
+if [ ! -f "$SSH_BASELINE_FILE" ]; then
+  # First run — save baseline, no alert
+  echo "$CURRENT_SSH_HASH" > "$SSH_BASELINE_FILE"
+  log "✓ SSH key baseline established ($(grep -c 'ssh-' "$REPORT_DIR/ssh-keys.txt" 2>/dev/null || echo 0) keys)"
+else
+  SAVED_SSH_HASH=$(cat "$SSH_BASELINE_FILE")
+  if [ "$CURRENT_SSH_HASH" != "$SAVED_SSH_HASH" ]; then
+    KEYS_DIFF=$(for user in "${USERS[@]}" root; do
+      HOME_DIR=$(eval echo "~$user")
+      AUTH_KEYS="$HOME_DIR/.ssh/authorized_keys"
+      [ -f "$AUTH_KEYS" ] && echo "=== $user ===" && cat "$AUTH_KEYS"
+    done)
+    warn "SSH authorized_keys changed since last baseline!"
+    queue_alert "SSH keys changed" "$KEYS_DIFF"
+    # Auto-update baseline after alerting (alert fires once per change)
+    echo "$CURRENT_SSH_HASH" > "$SSH_BASELINE_FILE"
+  else
+    log "✓ SSH keys unchanged since baseline"
+  fi
+fi
+KEY_COUNT=$(grep -c 'ssh-' "$REPORT_DIR/ssh-keys.txt" 2>/dev/null || echo 0)
+log "SSH keys saved to report ($KEY_COUNT keys total)"
+
+# --- 14. CHANGES IN /etc ---
+log "=== 14. RECENTLY MODIFIED SYSTEM FILES ==="
 find /etc -newer /etc/passwd -mtime -7 -type f 2>/dev/null \
   | grep -vE '(\.db|mtab|resolv|adjtime|machine-id)' \
   | tee "$REPORT_DIR/recently-modified-etc.txt"
 
-# --- Ð˜Ð¢ÐžÐ“ ---
+# --- SUMMARY ---
 echo ""
 echo "============================================================"
-log "ÐÐ£Ð”Ð˜Ð¢ Ð—ÐÐ’Ð•Ð Ð¨ÐÐ. Ð ÐµÐ·ÑƒÐ»ÑŒÑ‚Ð°Ñ‚Ñ‹ Ð²: $REPORT_DIR"
+log "AUDIT COMPLETE. Results in: $REPORT_DIR"
 echo "============================================================"
-echo "ÐžÑÐ½Ð¾Ð²Ð½Ñ‹Ðµ Ñ„Ð°Ð¹Ð»Ñ‹ Ð´Ð»Ñ Ð¿Ñ€Ð¾Ð²ÐµÑ€ÐºÐ¸:"
+echo "Key files to review:"
 ls -la "$REPORT_DIR/"
 
-# --- ÐžÐ¢ÐŸÐ ÐÐ’ÐšÐ ÐžÐ¢Ð§ÐÐ¢Ð Ð§Ð•Ð Ð•Ð— RESEND ---
-log "=== ÐžÑ‚Ð¿Ñ€Ð°Ð²ÐºÐ° Ð¾Ñ‚Ñ‡Ñ‘Ñ‚Ð° Ð¿Ð¾ email ==="
+# --- SEND REPORT VIA RESEND ---
+log "=== Sending report by email ==="
 
-# Ð¤Ð¾Ñ€Ð¼Ð¸Ñ€ÑƒÐµÐ¼ ÑÐ²Ð¾Ð´Ð½Ñ‹Ð¹ Ð¾Ñ‚Ñ‡Ñ‘Ñ‚
+# Build summary report
 SUMMARY_FILE="$REPORT_DIR/summary.txt"
 {
   echo "SECURITY AUDIT REPORT"
-  echo "Ð¡ÐµÑ€Ð²ÐµÑ€: $HOSTNAME"
-  echo "Ð”Ð°Ñ‚Ð°: $(date)"
-  echo "Ð”Ð¸Ñ€ÐµÐºÑ‚Ð¾Ñ€Ð¸Ñ Ð¾Ñ‚Ñ‡Ñ‘Ñ‚Ð°: $REPORT_DIR"
+  echo "Server: $HOSTNAME"
+  echo "Date: $(date)"
+  echo "Report directory: $REPORT_DIR"
   echo ""
   echo "=============================="
-  echo "ÐžÐ‘ÐÐÐ Ð£Ð–Ð•ÐÐÐ«Ð• ÐŸÐ ÐžÐ‘Ð›Ð•ÐœÐ«:"
+  echo "DETECTED ISSUES:"
   echo "=============================="
 
   if [ "${#ALERT_SUBJECTS[@]}" -eq 0 ]; then
-    echo "Ð¯Ð²Ð½Ñ‹Ñ… Ð¿Ñ€Ð¾Ð±Ð»ÐµÐ¼ Ð½Ðµ Ð¾Ð±Ð½Ð°Ñ€ÑƒÐ¶ÐµÐ½Ð¾."
+    echo "No issues detected."
   else
     for i in "${!ALERT_SUBJECTS[@]}"; do
       echo ""
@@ -602,23 +970,23 @@ SUMMARY_FILE="$REPORT_DIR/summary.txt"
 
   echo ""
   echo "=============================="
-  echo "Ð¡Ð¢ÐÐ¢Ð˜Ð¡Ð¢Ð˜ÐšÐ:"
+  echo "STATISTICS:"
   echo "=============================="
   for user in "${USERS[@]}"; do
     WEBSHELL_COUNT=$(cat "$REPORT_DIR/webshells-$user.txt" 2>/dev/null | wc -l)
     MOD_COUNT=$(cat "$REPORT_DIR/modified-files-$user.txt" 2>/dev/null | wc -l)
-    echo "$user: Ð¸Ð·Ð¼ÐµÐ½Ñ‘Ð½Ð½Ñ‹Ñ… Ñ„Ð°Ð¹Ð»Ð¾Ð²=$MOD_COUNT, Ð¿Ð¾Ð´Ð¾Ð·Ñ€Ð¸Ñ‚ÐµÐ»ÑŒÐ½Ñ‹Ñ…=$WEBSHELL_COUNT"
+    echo "$user: modified files=$MOD_COUNT, suspicious=$WEBSHELL_COUNT"
   done
 
   echo ""
-  echo "ÐŸÐ¾Ð»Ð½Ñ‹Ð¹ Ð¾Ñ‚Ñ‡Ñ‘Ñ‚ Ð²: $REPORT_DIR"
+  echo "Full report in: $REPORT_DIR"
 } > "$SUMMARY_FILE"
 
-# ÐžÐ¿Ñ€ÐµÐ´ÐµÐ»ÑÐµÐ¼ Ñ‚ÐµÐ¼Ñƒ Ð¿Ð¸ÑÑŒÐ¼Ð°
+# Determine email subject
 if [ "${#ALERT_SUBJECTS[@]}" -gt 0 ]; then
-  EMAIL_SUBJECT="[SECURITY ALERT] $HOSTNAME â€” Ð¾Ð±Ð½Ð°Ñ€ÑƒÐ¶ÐµÐ½Ð¾ ${#ALERT_SUBJECTS[@]} Ð¿Ñ€Ð¾Ð±Ð»ÐµÐ¼(Ñ‹)"
+  EMAIL_SUBJECT="[SECURITY ALERT] $HOSTNAME — ${#ALERT_SUBJECTS[@]} issue(s) detected"
 else
-  EMAIL_SUBJECT="[SECURITY OK] $HOSTNAME â€” Ð°ÑƒÐ´Ð¸Ñ‚ Ð·Ð°Ð²ÐµÑ€ÑˆÑ‘Ð½, Ð¿Ñ€Ð¾Ð±Ð»ÐµÐ¼ Ð½Ðµ Ð¾Ð±Ð½Ð°Ñ€ÑƒÐ¶ÐµÐ½Ð¾"
+  EMAIL_SUBJECT="[SECURITY OK] $HOSTNAME — audit complete, no issues detected"
 fi
 
 send_resend_email "$EMAIL_SUBJECT" "$SUMMARY_FILE"

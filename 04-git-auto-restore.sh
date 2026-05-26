@@ -1,11 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# AUTO-RESTORE SCRIPT — автоматическое восстановление через git по расписанию
-# Можно добавить в cron: 0 */6 * * * root bash /root/04-git-auto-restore.sh
+# AUTO-RESTORE SCRIPT — automatic restore via git on a schedule
+# Can be added to cron: 0 */6 * * * root bash /root/04-git-auto-restore.sh
 # =============================================================================
 
-# Авто-определение пользователей HestiaCP (или задайте вручную)
-# USERS=("user1" "user2")   # раскомментируйте чтобы переопределить
+LOCK_FILE="/var/lock/hestia-git-auto-restore.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another git auto-restore run is already running; exiting."
+  exit 0
+fi
+
+# Auto-detect HestiaCP users (or set manually)
+# USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then
   if command -v v-list-users &>/dev/null; then
     mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}')
@@ -17,10 +24,10 @@ fi
 LOG="/var/log/git-auto-restore.log"
 HOSTNAME="$(hostname -f)"
 
-# Resend настройки (берём из общего конфига)
-RESEND_API_KEY="re_ВАШ_API_КЛЮЧ"
-RESEND_FROM="security@ВАШ_ДОМЕН.com"
-RESEND_TO="admin@ВАШ_EMAIL.com"
+# Resend settings (taken from shared config)
+RESEND_API_KEY="re_YOUR_API_KEY"
+RESEND_FROM="security@your-domain.com"
+RESEND_TO="admin@your-email.com"
 [ -f /etc/security-audit.env ] && source /etc/security-audit.env
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG"; }
@@ -43,7 +50,7 @@ send_resend_email() {
     }"
 }
 
-log "=== Запуск автоматической проверки git ==="
+log "=== Starting automatic git check ==="
 
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
@@ -52,34 +59,47 @@ for user in "${USERS[@]}"; do
   while IFS= read -r gitdir; do
     REPO=$(dirname "$gitdir")
 
-    # Проверяем есть ли изменения
+    # Check if there are changes
     CHANGES=$(sudo -u "$user" git -C "$REPO" status --porcelain 2>/dev/null | wc -l)
 
     if [ "$CHANGES" -gt 0 ]; then
       CHANGED_FILES=$(sudo -u "$user" git -C "$REPO" status --short 2>/dev/null)
-      log "ВНИМАНИЕ: Обнаружены изменения в $REPO ($CHANGES файлов)"
+      log "WARNING: Changes detected in $REPO ($CHANGES files)"
       echo "$CHANGED_FILES" | tee -a "$LOG"
 
-      # Откатываем
+      # Save content diff before rollback (so we can review what was changed)
+      DIFF_CONTENT=$(sudo -u "$user" git -C "$REPO" diff 2>/dev/null | head -200)
+
+      # Roll back
       sudo -u "$user" git -C "$REPO" checkout -- . 2>/dev/null
-      sudo -u "$user" git -C "$REPO" clean -fd 2>/dev/null
-      log "✓ Откат выполнен: $REPO"
+      # Preserve forensic/quarantine artefacts so incident response workflow
+      # is not undone by the next cron tick (chattr +i alone also blocks
+      # `git clean`, but excluding the patterns avoids the noisy alert loop).
+      sudo -u "$user" git -C "$REPO" clean -fd \
+        -e '*.QUARANTINED' \
+        -e '*.malware-bak' \
+        -e '.malware-quarantine-*' \
+        2>/dev/null
+      log "✓ Rollback complete: $REPO"
 
-      # Уведомление через Resend
+      # Notify via Resend
       send_resend_email \
-        "[SECURITY ALERT] $HOSTNAME — файлы изменены и откатаны: $REPO" \
-        "Сервер: $HOSTNAME
-Репозиторий: $REPO
-Изменено файлов: $CHANGES
-Время: $(date)
+        "[SECURITY ALERT] $HOSTNAME — files changed and rolled back: $REPO" \
+        "Server: $HOSTNAME
+Repository: $REPO
+Files changed: $CHANGES
+Time: $(date)
 
-Изменённые файлы:
+Changed files:
 $CHANGED_FILES
 
-Откат выполнен через git checkout -- . && git clean -fd.
-Немедленно проверьте вектор атаки: sudo bash /root/server-security/01-security-audit.sh"
+Content diff (first 200 lines):
+${DIFF_CONTENT:-'(no tracked content diff — may be untracked files or mode-only change)'}
+
+Rollback performed via git checkout -- . && git clean -fd.
+Immediately check attack vector: sudo bash /root/server-security/01-security-audit.sh"
     fi
   done < <(find "$WEB_DIR" -maxdepth 4 -name ".git" -type d 2>/dev/null)
 done
 
-log "=== Проверка завершена ==="
+log "=== Check complete ==="
