@@ -275,6 +275,12 @@ PHP_WEBSHELL_FIXED_PATTERNS=(
   'r57shell'
   'phpspy'
   '/* LP_'
+  # LP_ marker without /* prefix (incident 2026-05-28 avtonic.com — Livewire RCE)
+  'echo "LP_'
+  # GUI shell from same incident: "System Manager" + "Command Executor" + magic key
+  'wanna_play_with_me'
+  'System Manager'
+  'Command Executor'
 )
 
 PHP_WEBSHELL_REGEX_PATTERNS=(
@@ -288,6 +294,12 @@ PHP_WEBSHELL_REGEX_PATTERNS=(
   'base64_decode.*eval'
   'WSO\b'
   'HTTP/1\.0 404.*die\(\)'
+  # Multi-fallback RCE pattern: tries system/passthru/shell_exec/exec/proc_open/popen in sequence
+  '@system\(\$.*@passthru\(\$'
+  # 404 + exit + REQUEST shell — typical hidden RCE backdoor
+  'HTTP/1\.1 404 Not Found.*exit.*\$_REQUEST'
+  # move_uploaded_file driven by user-controlled path (file uploader webshell)
+  'move_uploaded_file\(\$_FILES\[.*\$_(GET|POST|REQUEST)'
 )
 
 # Suspicious shell filenames (search everywhere including vendor/)
@@ -299,6 +311,11 @@ SHELL_FILENAMES=(
   'wp-headre.php'
 )
 SHELL_FILENAME_EXPR=( -name 'shc.php' -o -name 'adminfuns.php' -o -name 'wp-conffq.php' -o -name 'wp-headre.php' )
+
+# Suspicious mirror/path-traversal directories created inside a Laravel public/.
+# Webshells often live in nested paths that look like public/htdocs/, public/public/, etc.
+# A real Laravel app never has these as subdirs of public/.
+LARAVEL_MIRROR_DIR_NAMES=(htdocs html httpdocs public public_html www)
 
 is_known_safe_php_file() {
   local file_path="$1"
@@ -622,6 +639,70 @@ for user in "${USERS[@]}"; do
     fi
   fi
 done
+
+# 11. Mirror/path-traversal dirs inside Laravel public/.
+# Webshells often live in nested decoy paths (public/public/, public/htdocs/,
+# public/www/, public/public_html/) so SEO crawlers and admins miss them.
+# Incident 2026-05-28 avtonic.com dropped 20 vendor.php files this way.
+log "Checking for mirror/decoy dirs inside Laravel public/..."
+for user in "${USERS[@]}"; do
+  WEB_DIR="/home/$user/web"
+  if [ -d "$WEB_DIR" ]; then
+    MIRROR_HITS=$(find "$WEB_DIR" -maxdepth 6 -type d \
+      \( -path "*/public/public" \
+         -o -path "*/public/htdocs" \
+         -o -path "*/public/html" \
+         -o -path "*/public/httpdocs" \
+         -o -path "*/public/public_html" \
+         -o -path "*/public/www" \
+         -o -path "*/storage/app/public/app/public" \) \
+      ! -path "*/vendor/*" ! -path "*/node_modules/*" 2>/dev/null)
+    if [ -n "$MIRROR_HITS" ]; then
+      queue_alert "DECOY MIRROR DIRS in Laravel public/ for $user (webshell hideout)" "$MIRROR_HITS"
+      echo "$MIRROR_HITS" >> "$REPORT_DIR/webshells-$user.txt"
+    fi
+  fi
+done
+
+# 12. Livewire CVE check (GHSA-mr5q-7p3c-7mhh / file-upload RCE).
+# Vulnerable: Livewire 3.0.0 through 3.5.1. Fixed in 3.5.2.
+# Livewire 2.x is EOL and inherently risky for new exploits; warn separately.
+log "Checking Livewire versions for known RCE (GHSA-mr5q-7p3c-7mhh)..."
+LIVEWIRE_FINDINGS=""
+LIVEWIRE_EOL=""
+for c in /home/*/web/*/public_html/composer.lock; do
+  [ -f "$c" ] || continue
+  ver=$(grep -A1 '"name": "livewire/livewire"' "$c" 2>/dev/null \
+    | grep -E '"version"' | head -1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$ver" ] && continue
+  ver_clean="${ver#v}"
+  major=$(echo "$ver_clean" | cut -d. -f1)
+  minor=$(echo "$ver_clean" | cut -d. -f2)
+  patch=$(echo "$ver_clean" | cut -d. -f3)
+  site=$(dirname "$c")
+  # Livewire 2.x = EOL
+  if [ "$major" = "2" ]; then
+    LIVEWIRE_EOL+="$site  v$ver_clean (EOL)\n"
+    continue
+  fi
+  # Livewire 3.0.x - 3.5.1 vulnerable
+  if [ "$major" = "3" ]; then
+    if [ "$minor" -lt 5 ] || { [ "$minor" = "5" ] && [ "$patch" -lt 2 ]; }; then
+      LIVEWIRE_FINDINGS+="$site  v$ver_clean (vulnerable, upgrade to >=3.5.2)\n"
+    fi
+  fi
+done
+if [ -n "$LIVEWIRE_FINDINGS" ]; then
+  queue_alert "LIVEWIRE RCE VULNERABLE (GHSA-mr5q-7p3c-7mhh)" "$(printf "$LIVEWIRE_FINDINGS")"
+  echo -e "$LIVEWIRE_FINDINGS" >> "$REPORT_DIR/livewire-vulns.txt"
+fi
+if [ -n "$LIVEWIRE_EOL" ]; then
+  queue_alert "LIVEWIRE 2.x EOL (no security fixes upstream)" "$(printf "$LIVEWIRE_EOL")"
+  echo -e "$LIVEWIRE_EOL" >> "$REPORT_DIR/livewire-eol.txt"
+fi
+if [ -z "$LIVEWIRE_FINDINGS" ] && [ -z "$LIVEWIRE_EOL" ]; then
+  log "✓ All Livewire installs are >=3.5.2 (patched against GHSA-mr5q-7p3c-7mhh)"
+fi
 
 # --- 8. FILES WITH DANGEROUS PERMISSIONS ---
 log "=== 8. FILES WITH 777/SUID PERMISSIONS ==="
