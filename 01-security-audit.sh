@@ -863,7 +863,7 @@ if command -v ss >/dev/null 2>&1; then
   PHP_OUT=$(ss -tnpH state established 2>/dev/null \
     | grep -E 'php-fpm|"php"' \
     | awk '{print $4" -> "$5}' \
-    | grep -vE '-> (127\.|::1|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|\[::1\]|\[fe80)')
+    | grep -vE -- '-> (127\.|::1|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|\[::1\]|\[fe80)')
   if [ -n "$PHP_OUT" ]; then
     queue_alert "PHP-FPM OUTBOUND TO PUBLIC IP (possible C&C beacon)" "$PHP_OUT"
     echo "$PHP_OUT" | tee "$REPORT_DIR/php-fpm-outbound.txt"

@@ -108,7 +108,10 @@ Immediately check attack vector: sudo bash /root/server-security/01-security-aud
     WEBSHELLS_IN_IGNORED=$(sudo -u "$user" git -C "$REPO" \
       ls-files --ignored --exclude-standard --others 2>/dev/null \
       | grep -Ei '\.(php[0-9]?|phtml|phar)$' \
-      | grep -v '^vendor/' | grep -v '^node_modules/' \
+      | grep -v '^vendor/' \
+      | grep -v '^node_modules/' \
+      | grep -v '^storage/framework/' \
+      | grep -v '^storage/logs/' \
       | while IFS= read -r f; do
           fp="$REPO/$f"
           [ -f "$fp" ] || continue
