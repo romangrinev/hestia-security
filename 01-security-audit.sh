@@ -613,7 +613,7 @@ for user in "${USERS[@]}"; do
       ! -path "*/vendor/*" ! -path "*/node_modules/*" ! -path "*/.git/*" \
       ! -path "*/storage/framework/views/*" 2>/dev/null \
       | while IFS= read -r f; do
-          n=$(grep -cE 'goto [A-Za-z0-9_]{10,};' "$f" 2>/dev/null || echo 0)
+          n=$(grep -cE 'goto [A-Za-z0-9_]{10,};' "$f" 2>/dev/null); n=${n:-0}
           [ "$n" -gt 20 ] && echo "$f (goto-count: $n)"
         done)
     if [ -n "$GOTO_HITS" ]; then
