@@ -99,6 +99,57 @@ ${DIFF_CONTENT:-'(no tracked content diff — may be untracked files or mode-onl
 Rollback performed via git checkout -- . && git clean -fd.
 Immediately check attack vector: sudo bash /root/server-security/01-security-audit.sh"
     fi
+
+    # --- Scan gitignored paths for webshells (runs every tick, not only on CHANGES) ---
+    # git clean -fd silently skips files/dirs listed in .gitignore (e.g. public/build/).
+    # Attacker can drop a backdoor there and it survives the rollback completely undetected.
+    # Incident 2026-06-04: public/build/3ef1d42e273d.php survived git clean exactly this way;
+    # it was only found because a second css.php (full RCE) was in storage/app/public/app/public/.
+    WEBSHELLS_IN_IGNORED=$(sudo -u "$user" git -C "$REPO" \
+      ls-files --ignored --exclude-standard --others 2>/dev/null \
+      | grep -Ei '\.(php[0-9]?|phtml|phar)$' \
+      | grep -v '^vendor/' | grep -v '^node_modules/' \
+      | while IFS= read -r f; do
+          fp="$REPO/$f"
+          [ -f "$fp" ] || continue
+          # Alert on hex-named PHP (typical dropper pattern)
+          if echo "$f" | grep -qE '[0-9a-f]{8,}\.(php[0-9]?|phtml|phar)$'; then
+            echo "$fp"
+            continue
+          fi
+          # Alert if file contains any webshell pattern
+          if grep -qE \
+            'eval\(base64_decode|eval\(\$_[A-Z]|assert\(\$_|system\(\$_|passthru\(\$_|shell_exec\(\$_|@system\(.*@passthru|HTTP/1\.[01] 404.*exit.*\$_REQUEST|move_uploaded_file\(\$_FILES' \
+            "$fp" 2>/dev/null; then
+            echo "$fp"
+          fi
+        done)
+
+    if [ -n "$WEBSHELLS_IN_IGNORED" ]; then
+      log "CRITICAL: Webshell(s) in .gitignore-d path(s) in $REPO"
+      echo "$WEBSHELLS_IN_IGNORED" | tee -a "$LOG"
+
+      Q_BASE="$REPO/.malware-quarantine-$(date +%Y%m%d-%H%M%S)"
+      mkdir -p "$Q_BASE"
+      while IFS= read -r wp; do
+        [ -n "$wp" ] || continue
+        sudo cp "$wp" "$Q_BASE/$(basename "$wp").QUARANTINED" 2>/dev/null
+        sudo rm -f "$wp"
+        log "Quarantined and removed: $wp"
+      done <<< "$WEBSHELLS_IN_IGNORED"
+
+      send_resend_email \
+        "[SECURITY ALERT] $HOSTNAME — webshells in .gitignore-d dirs removed: $REPO" \
+        "Server: $HOSTNAME
+Repository: $REPO
+Time: $(date)
+
+Webshell(s) found in .gitignore-d directories (survived git-clean) and auto-removed:
+$WEBSHELLS_IN_IGNORED
+
+Quarantined to: $Q_BASE
+Run full audit: sudo bash /root/server-security/01-security-audit.sh"
+    fi
   done < <(find "$WEB_DIR" -maxdepth 4 -name ".git" -type d 2>/dev/null)
 done
 
