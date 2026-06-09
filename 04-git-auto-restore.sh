@@ -101,17 +101,17 @@ Immediately check attack vector: sudo bash /root/server-security/01-security-aud
     fi
 
     # --- Scan gitignored paths for webshells (runs every tick, not only on CHANGES) ---
-    # git clean -fd silently skips files/dirs listed in .gitignore (e.g. public/build/).
-    # Attacker can drop a backdoor there and it survives the rollback completely undetected.
-    # Incident 2026-06-04: public/build/3ef1d42e273d.php survived git clean exactly this way;
-    # it was only found because a second css.php (full RCE) was in storage/app/public/app/public/.
+    # IMPORTANT: use a strict allowlist of dangerous web-accessible/upload paths only.
+    # We intentionally DO NOT scan generic gitignored framework/cache paths to avoid
+    # false positives on legitimate Laravel compiled files (e.g. storage/framework/views).
+    # Incident 2026-06-04: real backdoor survived in public/build/, so keep those paths covered.
     WEBSHELLS_IN_IGNORED=$(sudo -u "$user" git -C "$REPO" \
       ls-files --ignored --exclude-standard --others 2>/dev/null \
       | grep -Ei '\.(php[0-9]?|phtml|phar)$' \
+      | grep -E '^(public/|storage/app/public/|bootstrap/cache/|tmp/|uploads?/|assets?/)' \
       | grep -v '^vendor/' \
       | grep -v '^node_modules/' \
-      | grep -v '^storage/framework/' \
-      | grep -v '^storage/logs/' \
+      | sort -u \
       | while IFS= read -r f; do
           fp="$REPO/$f"
           [ -f "$fp" ] || continue
