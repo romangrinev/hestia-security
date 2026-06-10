@@ -59,11 +59,12 @@ for user in "${USERS[@]}"; do
   while IFS= read -r gitdir; do
     REPO=$(dirname "$gitdir")
 
-    # Check if there are changes
-    CHANGES=$(sudo -u "$user" git -C "$REPO" status --porcelain 2>/dev/null | wc -l)
+    # Check if there are meaningful changes (ignore forensic/quarantine artifacts)
+    RAW_CHANGED_FILES=$(sudo -u "$user" git -C "$REPO" status --short 2>/dev/null)
+    CHANGED_FILES=$(echo "$RAW_CHANGED_FILES" | grep -vE '(^|/)\.malware-quarantine-|\.QUARANTINED$|\.malware-bak$')
+    CHANGES=$(echo "$CHANGED_FILES" | sed '/^$/d' | wc -l)
 
     if [ "$CHANGES" -gt 0 ]; then
-      CHANGED_FILES=$(sudo -u "$user" git -C "$REPO" status --short 2>/dev/null)
       log "WARNING: Changes detected in $REPO ($CHANGES files)"
       echo "$CHANGED_FILES" | tee -a "$LOG"
 
