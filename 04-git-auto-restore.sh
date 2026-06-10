@@ -61,7 +61,7 @@ for user in "${USERS[@]}"; do
 
     # Check if there are meaningful changes (ignore forensic/quarantine artifacts)
     RAW_CHANGED_FILES=$(sudo -u "$user" git -C "$REPO" status --short 2>/dev/null)
-    CHANGED_FILES=$(echo "$RAW_CHANGED_FILES" | grep -vE '(^|/)\.malware-quarantine-|\.QUARANTINED$|\.malware-bak$')
+    CHANGED_FILES=$(echo "$RAW_CHANGED_FILES" | grep -vE '\.malware-quarantine-|\.QUARANTINED$|\.malware-bak$')
     CHANGES=$(echo "$CHANGED_FILES" | sed '/^$/d' | wc -l)
 
     if [ "$CHANGES" -gt 0 ]; then
