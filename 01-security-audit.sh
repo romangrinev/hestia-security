@@ -189,10 +189,20 @@ else
 fi
 
 # Check: fail2ban is running (supports both iptables and nftables backends)
-if systemctl is-active --quiet fail2ban && fail2ban-client status sshd &>/dev/null; then
-  log "✓ fail2ban active (sshd jail running)"
+if systemctl is-active --quiet fail2ban; then
+  JAIL_LIST=$(fail2ban-client status 2>/dev/null \
+    | sed -n 's/.*Jail list:[[:space:]]*//p' \
+    | tr ',' '\n' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | sed '/^$/d')
+  if [ -n "$JAIL_LIST" ]; then
+    JAIL_COUNT=$(echo "$JAIL_LIST" | wc -l | tr -d ' ')
+    log "✓ fail2ban active ($JAIL_COUNT jail(s)): $(echo "$JAIL_LIST" | tr '\n' ',' | sed 's/,$//')"
+  else
+    queue_alert "fail2ban not active" "fail2ban service is running, but no active jails were detected"
+  fi
 else
-  queue_alert "fail2ban not active" "fail2ban service not running or sshd jail missing"
+  queue_alert "fail2ban not active" "fail2ban service not running"
 fi
 
 # --- 5. CRON JOBS FOR ALL USERS ---
@@ -862,7 +872,7 @@ log "=== 9b. PHP-FPM OUTBOUND CONNECTIONS ==="
 if command -v ss >/dev/null 2>&1; then
   PHP_OUT=$(ss -tnpH state established 2>/dev/null \
     | grep -E 'php-fpm|"php"' \
-    | awk '{print $4" -> "$5}' \
+    | awk '{print $3" -> "$4" "$5}' \
     | grep -vE -- '-> (127\.|::1|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|\[::1\]|\[fe80)')
   if [ -n "$PHP_OUT" ]; then
     queue_alert "PHP-FPM OUTBOUND TO PUBLIC IP (possible C&C beacon)" "$PHP_OUT"

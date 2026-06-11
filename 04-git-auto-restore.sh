@@ -35,19 +35,34 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG"; }
 send_resend_email() {
   local SUBJECT="$1"
   local BODY="$2"
-  local ESC_SUBJECT ESC_BODY
-  ESC_SUBJECT=$(echo "$SUBJECT" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  ESC_BODY=$(echo "$BODY" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+  local TMP_BODY_FILE TMP_JSON
+  TMP_BODY_FILE=$(mktemp /tmp/git-auto-restore-mail-body-XXXXXX.txt)
+  TMP_JSON=$(mktemp /tmp/git-auto-restore-mail-XXXXXX.json)
+  printf '%s\n' "$BODY" > "$TMP_BODY_FILE"
+
+  python3 - "$SUBJECT" "$RESEND_FROM" "$RESEND_TO" "$TMP_BODY_FILE" <<'PYEOF' > "$TMP_JSON"
+import json, sys
+subject = sys.argv[1]
+from_addr = sys.argv[2]
+to_addr = sys.argv[3]
+body_file = sys.argv[4]
+with open(body_file, 'r', errors='replace') as f:
+    body = f.read()
+print(json.dumps({
+    'from': from_addr,
+    'to': [to_addr],
+    'subject': subject,
+    'text': body,
+}))
+PYEOF
+
   curl -s -o /dev/null \
     -X POST https://api.resend.com/emails \
     -H "Authorization: Bearer ${RESEND_API_KEY}" \
     -H "Content-Type: application/json" \
-    -d "{
-      \"from\": \"${RESEND_FROM}\",
-      \"to\": [\"${RESEND_TO}\"],
-      \"subject\": \"${ESC_SUBJECT}\",
-      \"text\": \"${ESC_BODY}\"
-    }"
+    --data "@${TMP_JSON}"
+
+  rm -f "$TMP_BODY_FILE" "$TMP_JSON"
 }
 
 log "=== Starting automatic git check ==="
@@ -64,12 +79,33 @@ for user in "${USERS[@]}"; do
     CHANGED_FILES=$(echo "$RAW_CHANGED_FILES" | grep -vE '\.malware-quarantine-|\.QUARANTINED$|\.malware-bak$')
     CHANGES=$(echo "$CHANGED_FILES" | sed '/^$/d' | wc -l)
 
+    MASS_CHANGE_THRESHOLD=300
     if [ "$CHANGES" -gt 0 ]; then
       log "WARNING: Changes detected in $REPO ($CHANGES files)"
       echo "$CHANGED_FILES" | tee -a "$LOG"
 
       # Save content diff before rollback (so we can review what was changed)
       DIFF_CONTENT=$(sudo -u "$user" git -C "$REPO" diff 2>/dev/null | head -200)
+
+      if [ "$CHANGES" -gt "$MASS_CHANGE_THRESHOLD" ]; then
+        log "WARNING: Massive change set ($CHANGES files) in $REPO — auto-rollback skipped"
+        send_resend_email \
+          "[SECURITY ALERT] $HOSTNAME — massive change set detected (rollback skipped): $REPO" \
+          "Server: $HOSTNAME
+Repository: $REPO
+Files changed: $CHANGES
+Time: $(date)
+
+Massive change set detected (>${MASS_CHANGE_THRESHOLD} files).
+Automatic rollback skipped to avoid destructive false-positive cleanup.
+
+Changed files (first lines):
+$(echo "$CHANGED_FILES" | head -200)
+
+Investigate manually, then run:
+  sudo -u $user git -C $REPO status --short"
+        continue
+      fi
 
       # Roll back
       sudo -u "$user" git -C "$REPO" checkout -- . 2>/dev/null
