@@ -954,6 +954,35 @@ else
   log "✓ No executable files in /tmp and /dev/shm"
 fi
 
+# High-confidence local privesc IOC checks (incident-driven, low false-positive).
+# Detects known exploit toolkit markers found in real incidents:
+#   - scripts that inject NOPASSWD sudoers entries
+#   - passwd UID0 backdoor line (r00t::0:0)
+#   - "ME X 1337 Auto Root agent" shell toolkit in /dev/shm
+log "Checking /tmp and /dev/shm for high-confidence privesc IOC markers..."
+TMP_IOC_HITS=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if head -c 5242880 "$f" 2>/dev/null | strings 2>/dev/null \
+    | grep -qE 'NOPASSWD:ALL|r00t::0:0:|ME X 1337 Auto Root agent|trycloudflare\.com'; then
+    TMP_IOC_HITS+="$f\n"
+  fi
+done < <(find /tmp /dev/shm -type f -size -20M 2>/dev/null)
+if [ -n "$TMP_IOC_HITS" ]; then
+  queue_alert "PRIVESC IOC in /tmp or /dev/shm (high confidence)" "$(printf '%b' "$TMP_IOC_HITS")"
+  printf '%b' "$TMP_IOC_HITS" | sed '/^$/d' | sort -u > "$REPORT_DIR/tmp-privesc-ioc.txt"
+  warn "High-confidence privesc IOC markers detected in /tmp or /dev/shm"
+fi
+
+# Detect suspicious exploit-staging directories used by overlay/fuse local-priv-esc kits.
+# We only alert on very specific names observed in incidents to avoid noisy output.
+TMP_STAGE_DIRS=$(find /tmp -maxdepth 2 -type d 2>/dev/null \
+  | grep -E '/(ovlcap|\.ovl_(fuse|lower|upper|merged|work)|\.gcm_(fuse|lower|upper|merged|work)|\.fuse_legacy_(mnt|work)|\.cg_escape)$')
+if [ -n "$TMP_STAGE_DIRS" ]; then
+  queue_alert "Exploit staging dirs in /tmp (overlay/fuse toolkit)" "$TMP_STAGE_DIRS"
+  echo "$TMP_STAGE_DIRS" > "$REPORT_DIR/tmp-exploit-staging-dirs.txt"
+fi
+
 # Miner/backdoor detection: hidden executables in user home directories
 # Miners commonly hide in ~/.config/htop/, ~/.cache/, ~/.local/bin/ etc.
 log "Checking for hidden executables in user home directories (miner/backdoor)..."

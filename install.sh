@@ -36,21 +36,26 @@ log "Script permissions set"
 # --- 4. Cron ---
 CRON_FILE="/etc/cron.d/security-monitoring"
 if [ ! -f "$CRON_FILE" ]; then
-  cat > "$CRON_FILE" <<EOF
+  cat > "$CRON_FILE" <<'EOF'
 # Security monitoring cron jobs
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-# Daily security audit at 3:00
-0 3 * * * root bash ${SCRIPT_DIR}/01-security-audit.sh >> /var/log/security-audit.log 2>&1
-
-# Git auto-restore every 6 hours
-0 */6 * * * root bash ${SCRIPT_DIR}/04-git-auto-restore.sh >> /var/log/git-auto-restore.log 2>&1
 EOF
   log "Cron created: $CRON_FILE"
 else
   log "Cron already exists: $CRON_FILE"
 fi
+
+ensure_cron_line() {
+  local line="$1"
+  grep -Fqx "$line" "$CRON_FILE" || echo "$line" >> "$CRON_FILE"
+}
+
+ensure_cron_line "0 3 * * * root bash ${SCRIPT_DIR}/01-security-audit.sh >> /var/log/security-audit.log 2>&1"
+ensure_cron_line "0 */6 * * * root bash ${SCRIPT_DIR}/04-git-auto-restore.sh >> /var/log/git-auto-restore.log 2>&1"
+ensure_cron_line "*/30 * * * * root bash ${SCRIPT_DIR}/06-binary-integrity-guard.sh >> /var/log/binary-integrity-guard.log 2>&1"
+ensure_cron_line "*/15 * * * * root bash ${SCRIPT_DIR}/07-tmp-ioc-guard.sh >> /var/log/tmp-ioc-guard.log 2>&1"
+ensure_cron_line "20 4 * * * root bash ${SCRIPT_DIR}/08-guards-smoke-check.sh >> /var/log/guards-smoke-check.log 2>&1"
 
 # --- 5. Summary ---
 echo ""
@@ -65,3 +70,6 @@ echo "  3. Run audit:     sudo bash ${SCRIPT_DIR}/01-security-audit.sh"
 echo ""
 warn "Audit runs automatically every day at 3:00 (UTC)"
 warn "Git auto-restore — every 6 hours"
+warn "Binary integrity guard — every 30 minutes"
+warn "Tmp IOC quarantine guard — every 15 minutes"
+warn "Guards smoke-check — daily at 04:20"

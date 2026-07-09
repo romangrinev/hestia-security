@@ -28,6 +28,9 @@ bash install.sh
 | `02-git-cleanup.sh` | manual | Resets all git repositories (`git checkout -- . && git clean -fd`) to remove injected files. |
 | `03-hardening.sh` | manual (once) | PHP hardening, SSH lockdown, fail2ban setup, file permissions, inotifywait monitoring, nginx security blocks. |
 | `04-git-auto-restore.sh` | every 6 hours | Automatically reverts modified git repos and sends an email alert. |
+| `06-binary-integrity-guard.sh` | every 30 minutes | Baseline and drift alert for `/bin/su`, `sudo`, `passwd`, and key PAM files (`/etc/pam.d/*`). |
+| `07-tmp-ioc-guard.sh` | every 15 minutes | Quarantines high-confidence local privesc artifacts in `/tmp` and `/dev/shm`, sends alert with forensics path. |
+| `08-guards-smoke-check.sh` | daily at 04:20 | Verifies that guard cron entries, baseline, and guard logs are healthy; alerts if guards stop running. |
 
 ## Configuration
 
@@ -135,4 +138,21 @@ location = /livewire/update {
 ```
 0 3 * * *   root bash /root/server-security/01-security-audit.sh >> /var/log/security-audit.log 2>&1
 0 */6 * * * root bash /root/server-security/04-git-auto-restore.sh >> /var/log/git-auto-restore.log 2>&1
+*/30 * * * * root bash /root/server-security/06-binary-integrity-guard.sh >> /var/log/binary-integrity-guard.log 2>&1
+*/15 * * * * root bash /root/server-security/07-tmp-ioc-guard.sh >> /var/log/tmp-ioc-guard.log 2>&1
+20 4 * * * root bash /root/server-security/08-guards-smoke-check.sh >> /var/log/guards-smoke-check.log 2>&1
+```
+
+## Guard Initialization
+
+The binary guard creates its baseline automatically on first run. You can initialize explicitly:
+
+```bash
+sudo bash /root/server-security/06-binary-integrity-guard.sh --init
+```
+
+Manual smoke check:
+
+```bash
+sudo bash /root/server-security/08-guards-smoke-check.sh
 ```
