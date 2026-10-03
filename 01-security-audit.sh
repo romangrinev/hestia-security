@@ -168,7 +168,20 @@ SSH_OPEN=$(iptables -L INPUT -n --line-numbers 2>/dev/null \
 if [ -n "$SSH_OPEN" ]; then
   queue_alert "IPTABLES: SSH open to the world!" "Rule allows SSH from 0.0.0.0/0 — should be restricted by IP:\n$SSH_OPEN"
 else
-  log "✓ SSH restricted by IP (0.0.0.0/0 not allowed as source)"
+  log "✓ IPv4 SSH restricted by IP (0.0.0.0/0 not allowed as source)"
+fi
+
+# An IPv4 allowlist does not protect a public IPv6 listener. Hestia's IPv4
+# firewall rules do not cover ip6tables, so report an open IPv6 INPUT policy.
+if command -v ip6tables &>/dev/null; then
+  IP6TABLES_RULES=$(ip6tables -S INPUT 2>/dev/null)
+  printf '%s\n' "$IP6TABLES_RULES" > "$REPORT_DIR/ip6tables-input.txt"
+  if ip -6 -o addr show scope global 2>/dev/null | grep -q 'inet6 ' \
+    && ss -H -ltn '( sport = :22 )' 2>/dev/null | grep -q '\[::\]:22' \
+    && printf '%s\n' "$IP6TABLES_RULES" | grep -qx -- '-P INPUT ACCEPT'; then
+    queue_alert "IP6TABLES: SSH exposed over IPv6!" \
+      "SSH listens on public IPv6, and ip6tables INPUT has policy ACCEPT with no filtering rules. IPv4 SSH restrictions do not apply to IPv6."
+  fi
 fi
 
 # Check: INPUT policy

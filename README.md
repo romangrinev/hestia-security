@@ -79,15 +79,15 @@ Please include your HestiaCP version, Ubuntu/Debian version, and the relevant sc
 
 ## Firewall (iptables)
 
-After running `03-hardening.sh`, restrict SSH to your own IP:
+After running `03-hardening.sh`, restrict SSH to your own IP in Hestia's
+**Server Settings → Firewall**. Edit the TCP port 22 ACCEPT rule from
+`0.0.0.0/0` to your public IPv4 address with `/32`. Keep an existing SSH
+session open while testing a new connection. Hestia can rebuild iptables, so
+changes made only with `iptables` may not persist.
 
-```bash
-# Allow SSH only from your IP
-sudo iptables -R INPUT 10 -p tcp -s YOUR_IP --dport 22 -j ACCEPT
-
-# Persist rules across reboots
-sudo netfilter-persistent save
-```
+Check IPv6 separately: an IPv4 allowlist does not restrict a public IPv6
+address. If SSH listens on IPv6, configure an IPv6 firewall or disable its
+IPv6 listener only after arranging a recovery path.
 
 To whitelist your IP in fail2ban (so you can't be banned):
 
@@ -99,6 +99,7 @@ sudo systemctl restart fail2ban
 
 `01-security-audit.sh` automatically checks iptables and alerts if:
 - SSH is open to `0.0.0.0/0` (the entire internet)
+- SSH listens on public IPv6 with an unfiltered `ip6tables` INPUT policy
 - `INPUT` policy is not `DROP`
 - MySQL is accessible externally
 - fail2ban is not active
