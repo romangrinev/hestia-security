@@ -87,6 +87,19 @@ for user in "${USERS[@]}"; do
       # Save content diff before rollback (so we can review what was changed)
       DIFF_CONTENT=$(sudo -u "$user" git -C "$REPO" diff 2>/dev/null | head -200)
 
+      # Keep evidence of the recurring untracked public/required path before
+      # git clean removes it. It may be a file, directory, or symlink.
+      REQUIRED_PATH="$REPO/public/required"
+      if [ -e "$REQUIRED_PATH" ] || [ -L "$REQUIRED_PATH" ]; then
+        EVIDENCE_DIR="/root/security-incidents/git-auto-restore/$(date +%Y%m%d_%H%M%S)-${user}-$(basename "$(dirname "$REPO")")-$$"
+        install -d -m 700 "$EVIDENCE_DIR"
+        if cp -a -- "$REQUIRED_PATH" "$EVIDENCE_DIR/required"; then
+          log "Preserved public/required evidence in $EVIDENCE_DIR"
+        else
+          log "WARNING: Could not preserve public/required evidence in $EVIDENCE_DIR"
+        fi
+      fi
+
       if [ "$CHANGES" -gt "$MASS_CHANGE_THRESHOLD" ]; then
         log "WARNING: Massive change set ($CHANGES files) in $REPO — auto-rollback skipped"
         send_resend_email \

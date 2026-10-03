@@ -27,7 +27,8 @@ bash install.sh
 | `01-security-audit.sh` | daily at 3:00 AM | Full audit: webshells, cron, SSH logins, processes, modified files, binary integrity. Sends email report. |
 | `02-git-cleanup.sh` | manual | Resets all git repositories (`git checkout -- . && git clean -fd`) to remove injected files. |
 | `03-hardening.sh` | manual (once) | PHP hardening, SSH lockdown, fail2ban setup, file permissions, inotifywait monitoring, nginx security blocks. |
-| `04-git-auto-restore.sh` | every 6 hours | Automatically reverts modified git repos and sends an email alert. |
+| `04-git-auto-restore.sh` | every 6 hours | Automatically reverts modified git repos and sends an email alert. Preserves an untracked `public/required` path under `/root/security-incidents/git-auto-restore/` before removal. |
+| `05-file-monitor.sh` | systemd service | Logs script changes and creation of `public/required` across all HestiaCP web users. |
 | `06-binary-integrity-guard.sh` | every 30 minutes | Baseline and drift alert for `/bin/su`, `sudo`, `passwd`, and key PAM files (`/etc/pam.d/*`). |
 | `07-tmp-ioc-guard.sh` | every 15 minutes | Quarantines high-confidence local privesc artifacts in `/tmp` and `/dev/shm`, sends alert with forensics path. |
 | `08-guards-smoke-check.sh` | daily at 04:20 | Verifies that guard cron entries, baseline, and guard logs are healthy; alerts if guards stop running. |

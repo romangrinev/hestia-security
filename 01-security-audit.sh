@@ -270,7 +270,7 @@ done
 # --- 7. SEARCH FOR WEBSHELLS AND BACKDOORS ---
 log "=== 7. SEARCH FOR WEBSHELLS AND BACKDOORS ==="
 # IMPORTANT: vendor/, node_modules/ excluded from search — legitimate code there.
-# Searching only in public_html root, public/, storage/, and other non-vendor paths.
+# Search all site directories under each user's web/, including private/.
 
 # Patterns for PHP files (excluding vendor/ and node_modules/)
 # Keep these split so we can scan each tree once with fixed strings and once
@@ -279,6 +279,8 @@ PHP_WEBSHELL_FIXED_PATTERNS=(
   'eval(base64_decode'
   'eval(gzinflate'
   'eval(str_rot13'
+  # Remote PHP loader found in site private/ directories (2026-10-03).
+  'eval("\77\x3e" .'
   'eval(gzuncompress'
   'FilesMan'
   'c99shell'

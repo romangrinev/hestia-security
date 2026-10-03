@@ -108,7 +108,9 @@ BODY_FILE=$(mktemp /tmp/binary-guard-body-XXXXXX.txt)
 build_snapshot "$CURRENT_FILE"
 
 if ! diff -u "$BASELINE_FILE" "$CURRENT_FILE" > "$DIFF_FILE"; then
-  ALERT_SIG=$(sha256sum "$DIFF_FILE" | awk '{print $1}')
+  # diff headers include the unique temporary filename and current timestamp.
+  # Exclude them so repeated reports for the same changed content deduplicate.
+  ALERT_SIG=$(sed '1,2d' "$DIFF_FILE" | sha256sum | awk '{print $1}')
   LAST_SIG=""
   [ -f "$LAST_ALERT_SIG_FILE" ] && LAST_SIG=$(cat "$LAST_ALERT_SIG_FILE")
 

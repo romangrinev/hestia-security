@@ -14,7 +14,7 @@ WATCH_DIRS=""
 
 # Auto-detect all HestiaCP web users (skips admin)
 if command -v /usr/local/hestia/bin/v-list-users &>/dev/null; then
-  for user in $(/usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}'); do
+  for user in $(/usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk '$1 != "admin" && NF {print $1}'); do
     [ -d "/home/$user/web" ] && WATCH_DIRS="$WATCH_DIRS /home/$user/web"
   done
 fi
@@ -36,7 +36,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting file monitor. Watching:$WATCH_DIRS
   >> /var/log/file-changes.log
 
 exec inotifywait -m -r -e create,modify,moved_to \
-  --include '(artisan|\.(php|phtml|phar|js|html|sh|py|pl))$' \
+  --include '(artisan|/public/required|\.(php|phtml|phar|js|html|sh|py|pl))$' \
   $WATCH_DIRS 2>/dev/null \
   | while read dir event file; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $event: ${dir}${file}" \
