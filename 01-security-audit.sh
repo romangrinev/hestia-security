@@ -220,6 +220,7 @@ fi
 
 # --- 5. CRON JOBS FOR ALL USERS ---
 log "=== 5. CRON JOBS ==="
+CRON_ALLOWLIST_FILE="/etc/security-audit-cron.allow"
 echo "System cron:"
 ls -la /etc/cron* 2>/dev/null
 cat /etc/crontab 2>/dev/null
@@ -237,6 +238,17 @@ for user in "${USERS[@]}" root www-data; do
     #   hestiaweb/hestia      — HestiaCP system tasks
     CRON_SUSPICIOUS=$(echo "$CRON_REAL" | grep -v 'artisan schedule:run' | \
       grep -v 'server-security\|security-audit' | grep -v 'hestia')
+    # Allow only exact user:cron-line entries from a root-owned, non-writable file.
+    # A changed schedule or command must produce a new alert.
+    if [ -n "$CRON_SUSPICIOUS" ] && [ -f "$CRON_ALLOWLIST_FILE" ] && \
+       [ ! -L "$CRON_ALLOWLIST_FILE" ] && \
+       [ "$(stat -c '%u' "$CRON_ALLOWLIST_FILE")" = 0 ] && \
+       [ -z "$(find "$CRON_ALLOWLIST_FILE" -maxdepth 0 -perm /022 -print)" ]; then
+      CRON_SUSPICIOUS=$(printf '%s\n' "$CRON_SUSPICIOUS" | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        grep -Fqx -- "$user:$line" "$CRON_ALLOWLIST_FILE" || printf '%s\n' "$line"
+      done)
+    fi
     if [ -n "$CRON_SUSPICIOUS" ]; then
       queue_alert "Cron job for user $user" "$CRON"
     fi

@@ -137,6 +137,16 @@ location = /livewire/update {
 
 ## Cron (configured by `install.sh`)
 
+To accept a reviewed, site-specific cron entry without hiding later changes,
+add its exact `username:cron line` to `/etc/security-audit-cron.allow`. Keep this
+file owned by root and not writable by group or others. For example:
+
+```
+example:*/5 * * * * /usr/local/bin/deploy-example
+```
+
+If the schedule or command changes, the audit alerts again.
+
 ```
 0 3 * * *   root bash /root/server-security/01-security-audit.sh >> /var/log/security-audit.log 2>&1
 0 */6 * * * root bash /root/server-security/04-git-auto-restore.sh >> /var/log/git-auto-restore.log 2>&1
