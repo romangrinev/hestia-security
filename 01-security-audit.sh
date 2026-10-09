@@ -409,7 +409,7 @@ for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
   FOUND_FILE="$REPORT_DIR/webshells-$user.txt"
   if [ -d "$WEB_DIR" ]; then
-    echo "" > "$FOUND_FILE"
+    : > "$FOUND_FILE"
 
     # 1. Search for malicious patterns in PHP files, excluding vendor/ and node_modules/
     # Scan each tree once per pattern type to avoid N x pattern full-tree rescans.
