@@ -210,11 +210,16 @@ for user in "${USERS[@]}"; do
       [ -d "$domain_dir" ] || continue
       # Directories: 755 (including vendor/ and node_modules/ — execute bit needed for traversal)
       find "$domain_dir" -type d -exec chmod 755 {} \;
-      # Files: 644 — EXCLUDE binaries in .bin/ dirs (they would lose execute bit)
+      # Files: 644 — EXCLUDE binaries and environment files containing secrets.
       find "$domain_dir" -type f \
         -not -path "*/node_modules/.bin/*" \
         -not -path "*/vendor/bin/*" \
+        -not -name '.env' \
+        -not -name '.env.*' \
         -exec chmod 644 {} \;
+      # PHP-FPM runs as the Hestia web user, so only that user needs to read these.
+      find "$domain_dir" -type f \( -name '.env' -o -name '.env.*' \) \
+        -exec chmod 600 {} \;
       # Restore execute bit for node_modules/.bin and vendor/bin binaries
       find "$domain_dir/node_modules/.bin" -maxdepth 1 \( -type f -o -type l \) \
         -exec chmod +x {} \; 2>/dev/null || true
