@@ -15,7 +15,7 @@ fi
 # USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then
   if command -v v-list-users &>/dev/null; then
-    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}')
+    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk '$1 ~ /^[a-z_][a-z0-9_-]*$/ && $1 != "admin" && $1 != "user" && $1 != "username" {print $1}')
   else
     mapfile -t USERS < <(ls /home/ | grep -vE '^(admin|lost\+found|ubuntu)$')
   fi

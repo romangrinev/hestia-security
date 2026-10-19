@@ -31,7 +31,7 @@ bash install.sh
 | `05-file-monitor.sh` | systemd service | Logs script changes and creation of `public/required` across all HestiaCP web users. |
 | `06-binary-integrity-guard.sh` | every 30 minutes | Baseline and drift alert for `/bin/su`, `sudo`, `passwd`, and key PAM files (`/etc/pam.d/*`). |
 | `07-tmp-ioc-guard.sh` | every 15 minutes | Quarantines high-confidence local privesc artifacts in `/tmp` and `/dev/shm`, sends alert with forensics path. |
-| `08-guards-smoke-check.sh` | daily at 04:20 | Verifies that guard cron entries, baseline, and guard logs are healthy; alerts if guards stop running. |
+| `08-guards-smoke-check.sh` | daily at 04:20 | Verifies that the daily audit completed (heartbeat < 26h, email delivered), cron entries and service, baseline, and guard logs. Emails `[SECURITY ALERT]` on failure and `[SECURITY OK]` on success. |
 
 ## Configuration
 
@@ -42,7 +42,8 @@ RESEND_FROM="security@yourdomain.com" # verified sender domain in Resend
 RESEND_TO="admin@youremail.com"       # alert recipient email
 ```
 
-Scripts auto-detect HestiaCP users via `v-list-users`.  
+Scripts auto-detect HestiaCP users via `v-list-users`, with or without header lines.
+If `v-list-users` is unavailable, they fall back to directories in `/home`; users without `/home/<user>/web` are skipped where applicable.
 To set the user list manually, uncomment the `USERS=` line at the top of any script.
 
 ## Manual Run
@@ -168,3 +169,9 @@ Manual smoke check:
 ```bash
 sudo bash /root/server-security/08-guards-smoke-check.sh
 ```
+
+## Monitoring health
+
+- The audit writes `/var/lib/hestia-security/audit-last-run` only after completing; the daily smoke check alerts if it is older than 26 hours or the audit email was not delivered.
+- The smoke check sends a daily `[SECURITY OK]` email by default. Set `SMOKE_OK_EMAIL=0` in `/etc/security-audit.env` to receive emails only on failures.
+- To detect cron failures from outside the server, set `HEALTHCHECK_URL` in `/etc/security-audit.env` to a dead-man's-switch URL. The smoke check pings it only when local checks pass.

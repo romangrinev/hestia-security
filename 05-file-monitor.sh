@@ -14,7 +14,7 @@ WATCH_DIRS=""
 
 # Auto-detect all HestiaCP web users (skips admin)
 if command -v /usr/local/hestia/bin/v-list-users &>/dev/null; then
-  for user in $(/usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk '$1 != "admin" && NF {print $1}'); do
+  for user in $(/usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk '$1 ~ /^[a-z_][a-z0-9_-]*$/ && $1 != "admin" && $1 != "user" && $1 != "username" {print $1}'); do
     [ -d "/home/$user/web" ] && WATCH_DIRS="$WATCH_DIRS /home/$user/web"
   done
 fi

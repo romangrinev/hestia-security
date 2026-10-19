@@ -15,7 +15,7 @@ fi
 # USERS=("user1" "user2")   # uncomment to override
 if [ -z "${USERS+x}" ]; then
   if command -v v-list-users &>/dev/null; then
-    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk 'NR>2 && $1 != "admin" {print $1}' | sort -u)
+    mapfile -t USERS < <(sudo /usr/local/hestia/bin/v-list-users plain 2>/dev/null | awk '$1 ~ /^[a-z_][a-z0-9_-]*$/ && $1 != "admin" && $1 != "user" && $1 != "username" {print $1}' | sort -u)
   else
     mapfile -t USERS < <(ls /home/ | grep -vE '^(admin|lost\+found|ubuntu)$' | sort -u)
   fi
@@ -41,6 +41,7 @@ ALERT_BODIES=()     # accumulate alert bodies
 
 # Load config from file if exists (to avoid storing keys in the script)
 [ -f /etc/security-audit.env ] && source /etc/security-audit.env
+EMAIL_SENT=0
 
 # Send email via Resend API
 # $1 — subject, $2 — path to email body file (plain text)
@@ -73,6 +74,7 @@ PYEOF
   rm -f "$TMPJSON"
 
   if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    EMAIL_SENT=1
     log "Email sent via Resend: $SUBJECT"
   else
     warn "Email send error (HTTP $HTTP_CODE): $(cat /tmp/resend-response.json 2>/dev/null)"
@@ -1137,3 +1139,22 @@ else
 fi
 
 send_resend_email "$EMAIL_SUBJECT" "$SUMMARY_FILE"
+
+STATE_DIR="/var/lib/hestia-security"
+if ! install -d -m 700 "$STATE_DIR"; then
+  warn "Could not create audit state directory: $STATE_DIR"
+  exit 1
+fi
+STATE_TMP=$(mktemp "$STATE_DIR/audit-last-run.XXXXXX") || {
+  warn "Could not create temporary audit heartbeat in $STATE_DIR"
+  exit 1
+}
+if ! {
+  printf 'time=%s\nalerts=%s\nemail_sent=%s\n' "$(date +%s)" "${#ALERT_SUBJECTS[@]}" "$EMAIL_SENT" > "$STATE_TMP" &&
+    chmod 600 "$STATE_TMP" &&
+    mv -f "$STATE_TMP" "$STATE_DIR/audit-last-run"
+}; then
+  rm -f "$STATE_TMP"
+  warn "Could not write audit heartbeat: $STATE_DIR/audit-last-run"
+  exit 1
+fi
