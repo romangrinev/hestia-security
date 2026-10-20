@@ -461,11 +461,12 @@ for user in "${USERS[@]}"; do
     fi
 
     # 3. PHP files with hex names (8+ hex chars) — typical for droppers
-    # Exclude storage/framework/views/ — legitimate compiled Laravel Blade templates
+    # Exclude known compiled template caches; content-based checks above still scan them.
     RESULTS=$(find "$WEB_DIR" -type f -name "*.php" 2>/dev/null \
       | grep -E '/[0-9a-f]{8,}\.php$' \
       | grep -v '/.git/' \
       | grep -v '/storage/framework/views/' \
+      | grep -v '/wp-content/plugins/mailpoet/generated/twig/' \
       | grep -v '/vendor/')
     RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
     if [ -n "$RESULTS" ]; then

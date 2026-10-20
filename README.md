@@ -117,6 +117,9 @@ The audit detects:
 - Files **not registered in dpkg** (attacker removed them from the package database)
 - **dpkg checksum mismatches**
 
+The PHP dropper filename heuristic excludes compiled Laravel Blade and MailPoet Twig
+template caches. Content-based PHP checks still scan those files.
+
 ## Nginx Security Blocks (Livewire)
 
 `03-hardening.sh` generates per-site `nginx.ssl.conf_security` files (HestiaCP's extra nginx include mechanism).
