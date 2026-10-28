@@ -127,7 +127,7 @@ template caches. Content-based PHP checks still scan those files.
 For Laravel sites with Livewire, it adds:
 
 ```nginx
-location = /livewire/update {
+location ~ ^/livewire(-[0-9a-f]+)?/update$ {
     if ($http_user_agent ~* "python-requests|curl|wget|libwww|Go-http") {
         return 403;
     }
@@ -137,7 +137,18 @@ location = /livewire/update {
 }
 ```
 
-> **Note:** The `try_files` line is required. Without it, the exact-match `location = /livewire/update` block will return 404 even though PHP-FPM is configured at the server level — exact-match locations do not fall through.
+The pattern covers both `/livewire/update` and Livewire 4 routes such as
+`/livewire-a1b2c3d4/update`; the upload rule handles both prefixes too.
+The `try_files` line is required to forward these requests to Laravel.
+
+User-Agent and Referer checks are supplemental filters: clients can forge both
+headers. Configure Livewire's `temporary_file_upload.rules` to validate allowed
+MIME types **and** filename extensions before files reach temporary storage.
+Choose the allowlist to match the site's actual upload requirements. Validation
+only when the final form is submitted does not protect the temporary endpoint.
+Keep temporary uploads outside the public web root, and prohibit script execution
+in all public upload directories. The auto-restore scan also covers the default
+`storage/app/livewire-tmp/` and `storage/app/private/livewire-tmp/` paths.
 
 ## Cron (configured by `install.sh`)
 
