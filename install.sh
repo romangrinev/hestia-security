@@ -26,7 +26,7 @@ fi
 
 # --- 2. Dependencies ---
 log "Checking dependencies..."
-apt-get install -y curl git inotify-tools fail2ban >/dev/null 2>&1
+apt-get install -y curl git python3 inotify-tools fail2ban >/dev/null 2>&1
 log "Dependencies installed"
 
 # --- 3. Script permissions ---
