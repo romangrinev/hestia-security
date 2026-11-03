@@ -385,8 +385,9 @@ for user in "${USERS[@]}"; do
     }'
 
     # Livewire block (Laravel sites only) — must include try_files to pass to PHP-FPM
-    LIVEWIRE_BLOCK='# Block bot exploitation of Livewire update endpoint
-location = /livewire/update {
+    LIVEWIRE_BLOCK='# Cover both legacy routes and Livewire 4 hashed route prefixes.
+# Header checks are supplemental; enforce upload validation in the application.
+location ~ ^/livewire(-[0-9a-f]+)?/update$ {
     if ($http_user_agent ~* "python-requests|curl|wget|libwww|Go-http") {
         return 403;
     }
@@ -395,8 +396,8 @@ location = /livewire/update {
     try_files $uri /index.php?$query_string;
 }
 
-# Block Livewire file upload from bots (no referer = not a browser form)
-location = /livewire/upload-file {
+# Reject uploads without a referer; this header is not an authentication check.
+location ~ ^/livewire(-[0-9a-f]+)?/upload-file$ {
     if ($http_referer = "") {
         return 403;
     }

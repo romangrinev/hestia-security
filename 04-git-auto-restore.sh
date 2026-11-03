@@ -158,7 +158,7 @@ Immediately check attack vector: sudo bash /root/server-security/01-security-aud
     WEBSHELLS_IN_IGNORED=$(sudo -u "$user" git -C "$REPO" \
       ls-files --ignored --exclude-standard --others 2>/dev/null \
       | grep -Ei '\.(php[0-9]?|phtml|phar)$' \
-      | grep -E '^(public/|storage/app/public/|bootstrap/cache/|tmp/|uploads?/|assets?/)' \
+      | grep -E '^(public/|storage/app/(public/|livewire-tmp/|private/livewire-tmp/)|bootstrap/cache/|tmp/|uploads?/|assets?/)' \
       | grep -v '^vendor/' \
       | grep -v '^node_modules/' \
       | sort -u \

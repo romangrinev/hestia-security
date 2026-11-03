@@ -4,3 +4,13 @@ audit-report.txt
 cleanup-report.txt
 hardening-report.txt
 /root/security-audit-*/
+security-audit-*/
+security-incidents/
+.malware-quarantine-*/
+*.QUARANTINED
+*.jsonl
+report-*.txt
+.env
+security-audit.env
+__pycache__/
+*.pyc

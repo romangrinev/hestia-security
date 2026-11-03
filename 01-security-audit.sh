@@ -4,6 +4,8 @@
 # Run as root: sudo bash 01-security-audit.sh 2>&1 | tee audit-report.txt
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 LOCK_FILE="/var/lock/hestia-security-audit.lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -314,7 +316,7 @@ PHP_WEBSHELL_FIXED_PATTERNS=(
   'r57shell'
   'phpspy'
   '/* LP_'
-  # LP_ marker without /* prefix (incident 2026-05-28 avtonic.com — Livewire RCE)
+  # LP_ marker without /* prefix (observed in an upload-related incident)
   'echo "LP_'
   # GUI shell from same incident: "System Manager" + "Command Executor" + magic key
   'wanna_play_with_me'
@@ -452,6 +454,29 @@ for user in "${USERS[@]}"; do
       echo "$RESULTS" | tee -a "$FOUND_FILE"
     fi
 
+    # PHP can be hidden in media, static assets, or arbitrary file extensions.
+    # Keep this read-only: preserve evidence and review findings before removal.
+    DISGUISED_REPORT="$REPORT_DIR/disguised-php-$user.jsonl"
+    if ! python3 "$SCRIPT_DIR/lib/scan_disguised_php.py" "$WEB_DIR" \
+      > "$DISGUISED_REPORT" 2> "$REPORT_DIR/disguised-php-$user.stderr"; then
+      queue_alert "DISGUISED PHP SCAN INCOMPLETE for $user" \
+        "Review $DISGUISED_REPORT and $REPORT_DIR/disguised-php-$user.stderr; an incomplete scan is not a clean result."
+    fi
+    DISGUISED_HITS=$(python3 - "$DISGUISED_REPORT" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as report:
+    for line in report:
+        record = json.loads(line)
+        if record['type'] == 'finding':
+            # JSON-quote paths to keep control characters out of report lines.
+            print(json.dumps(record['path']) + ' (' + ', '.join(record['reasons']) + ')')
+PYEOF
+    )
+    if [ -n "$DISGUISED_HITS" ]; then
+      queue_alert "PHP UNDER UNEXPECTED EXTENSION for $user (review required)" "$DISGUISED_HITS"
+      printf '%s\n' "$DISGUISED_HITS" | tee -a "$FOUND_FILE"
+    fi
+
     # 2. Search by suspicious filenames (everywhere)
     RESULTS=$(find "$WEB_DIR" \( "${SHELL_FILENAME_EXPR[@]}" \) 2>/dev/null | grep -v '/.git/')
     RESULTS=$(printf '%s\n' "$RESULTS" | filter_known_safe_results)
@@ -583,8 +608,7 @@ done
 # (~500B) PHP stub that either renders 503 or `return require __DIR__.'/down';`. Anything
 # bigger or containing obfuscation markers = malware (auto-required by public/index.php
 # BEFORE Laravel bootstrap, so it executes on every request without leaving framework traces).
-# Reference: incident 2026-05-25 grinev.studio — 17KB goto-obfuscated cloaker calling out
-# to 198.204.224.178 (opboot.icu C&C).
+# Observed variant: a 17KB goto-obfuscated cloaker contacting a malware C&C.
 log "Checking Laravel storage/framework/maintenance.php integrity..."
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"
@@ -614,7 +638,7 @@ done
 #   events.php, container.php (Laravel 11+), plus per-package caches like blade-icons.php,
 #   livewire-components.php, filament-*.php — these are written by package service providers.
 # Suspicious: digit-prefixed names (e.g., 1index.php), names matching index/loader/cache,
-#   or random hex names — staged payloads (incident 2026-05-25 grinev.studio dropped
+#   or random hex names — staged payloads (an observed variant stored a
 #   202KB encrypted backdoor as `1index.php` here).
 log "Checking Laravel bootstrap/cache/ for unexpected PHP files..."
 LARAVEL_CACHE_WHITELIST='^(services|packages|config|routes-v[0-9]+|compiled|events|container|blade-icons|livewire-components|filament-[a-z0-9-]+|[a-z][a-z0-9-]*-components|[a-z][a-z0-9-]*-icons)\.php$'
@@ -683,7 +707,7 @@ done
 # 11. Mirror/path-traversal dirs inside Laravel public/.
 # Webshells often live in nested decoy paths (public/public/, public/htdocs/,
 # public/www/, public/public_html/) so SEO crawlers and admins miss them.
-# Incident 2026-05-28 avtonic.com dropped 20 vendor.php files this way.
+# An observed variant dropped multiple vendor.php files this way.
 log "Checking for mirror/decoy dirs inside Laravel public/..."
 for user in "${USERS[@]}"; do
   WEB_DIR="/home/$user/web"

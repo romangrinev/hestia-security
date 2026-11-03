@@ -4,7 +4,11 @@ Security hardening, monitoring and incident response scripts for **HestiaCP** se
 
 ## Public Release
 
-This repository is intentionally sanitized for public use. It does not contain private domains, personal IP addresses, API keys, or internal incident notes.
+The current source uses example configuration and generic operational guidance.
+Keep production configuration, audit reports, and quarantine evidence outside
+this repository. Review Git history and published discussions separately before
+sharing a repository: removing details from the current files does not remove
+them from older commits or copies.
 
 The scripts are provided as a best-effort toolkit for HestiaCP administrators. They are not a substitute for a complete security program, and they may need adjustment for your server layout, PHP stack, or nginx template set.
 
@@ -24,7 +28,7 @@ bash install.sh
 
 | Script | When | Description |
 |--------|------|-------------|
-| `01-security-audit.sh` | daily at 3:00 AM | Full audit: webshells, cron, SSH logins, processes, modified files, binary integrity. Sends email report. |
+| `01-security-audit.sh` | daily at 3:00 AM | Full audit: webshells (including PHP disguised as media), cron, SSH logins, processes, modified files, binary integrity. Sends email report. |
 | `02-git-cleanup.sh` | manual | Resets all git repositories (`git checkout -- . && git clean -fd`) to remove injected files. |
 | `03-hardening.sh` | manual (once) | PHP hardening, SSH lockdown, fail2ban setup, file permissions, inotifywait monitoring, nginx security blocks. |
 | `04-git-auto-restore.sh` | every 6 hours | Automatically reverts modified git repos and sends an email alert. Preserves an untracked `public/required` path under `/root/security-incidents/git-auto-restore/` before removal. |
@@ -63,7 +67,7 @@ sudo bash /root/server-security/02-git-cleanup.sh 2>&1 | tee /tmp/cleanup.txt
 
 - Ubuntu 20.04+ / Debian 11+
 - HestiaCP
-- `curl`, `git`, `inotify-tools`, `fail2ban`
+- `curl`, `git`, Python 3.8+, `inotify-tools`, `fail2ban`
 - [Resend.com](https://resend.com) account (free up to 3,000 emails/month)
 
 ## Compatibility Notes
@@ -120,6 +124,41 @@ The audit detects:
 The PHP dropper filename heuristic excludes compiled Laravel Blade and MailPoet Twig
 template caches. Content-based PHP checks still scan those files.
 
+## PHP hidden under other extensions
+
+The daily audit also runs `lib/scan_disguised_php.py` against each user's web
+directory. It reads whole files in chunks, without a file-size cutoff, and
+reports PHP headers under unexpected extensions (including mixed-case `.pHp`),
+PHP embedded in media, direct request-execution patterns, and dense `goto`
+obfuscation combined with `eval`. Static asset directories such as `public/js`
+and media files inside `vendor` are included.
+
+The additional pass skips ordinary PHP/source-template suffixes, `.git`,
+`node_modules`, symbolic links and non-regular files. Root-owned quarantine
+artifacts that are not group/world-writable are excluded. It does not unpack
+archives, decode arbitrary obfuscation, or prove execution. A bare `<?=` byte
+sequence in a binary image is not sufficient to raise an alert; a PHP example
+inside a JavaScript comment alone is not either. Findings require review and
+are never automatically executed, moved, or deleted by this check.
+
+Each `disguised-php-USER.jsonl` report contains paths, reasons, SHA-256 hashes,
+counts, and scan errors, without file contents. Findings join the existing daily
+email. Missing helpers and read errors raise an incomplete-scan alert instead
+of being treated as a clean result. Update the complete repository, including
+`lib/`, when deploying the package; copying only `01-security-audit.sh` is not
+sufficient.
+
+Run the extra check on a staging directory without invoking the full audit:
+
+```bash
+python3 lib/scan_disguised_php.py /path/to/site > /tmp/disguised-php.jsonl
+```
+
+Exit status `0` means the scan completed and may still contain findings; `2`
+means it was incomplete. Run the synthetic regression tests with
+`python3 -m unittest discover -s tests -v`. GitHub Actions runs these tests and
+shell syntax checks; it does not deploy or reboot a server.
+
 ## Nginx Security Blocks (Livewire)
 
 `03-hardening.sh` generates per-site `nginx.ssl.conf_security` files (HestiaCP's extra nginx include mechanism).
@@ -127,7 +166,7 @@ template caches. Content-based PHP checks still scan those files.
 For Laravel sites with Livewire, it adds:
 
 ```nginx
-location = /livewire/update {
+location ~ ^/livewire(-[0-9a-f]+)?/update$ {
     if ($http_user_agent ~* "python-requests|curl|wget|libwww|Go-http") {
         return 403;
     }
@@ -137,7 +176,18 @@ location = /livewire/update {
 }
 ```
 
-> **Note:** The `try_files` line is required. Without it, the exact-match `location = /livewire/update` block will return 404 even though PHP-FPM is configured at the server level — exact-match locations do not fall through.
+The pattern covers both `/livewire/update` and Livewire 4 routes such as
+`/livewire-a1b2c3d4/update`; the upload rule handles both prefixes too.
+The `try_files` line is required to forward these requests to Laravel.
+
+User-Agent and Referer checks are supplemental filters: clients can forge both
+headers. Configure Livewire's `temporary_file_upload.rules` to validate allowed
+MIME types **and** filename extensions before files reach temporary storage.
+Choose the allowlist to match the site's actual upload requirements. Validation
+only when the final form is submitted does not protect the temporary endpoint.
+Keep temporary uploads outside the public web root, and prohibit script execution
+in all public upload directories. The auto-restore scan also covers the default
+`storage/app/livewire-tmp/` and `storage/app/private/livewire-tmp/` paths.
 
 ## Cron (configured by `install.sh`)
 
